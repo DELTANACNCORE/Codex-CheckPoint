@@ -1,6 +1,6 @@
 # 会话断点 (checkpoint)
 
-把 Claude Code 每次会话自动沉淀成 Obsidian 里的「断点笔记」——主题命名、状态 triage、标签分类、可恢复。
+把 Claude Code 每次会话自动沉淀成「断点笔记」——主题命名、状态 triage、标签分类、可恢复。写入磁盘 markdown，配 Obsidian 可变成可交互知识库（不装也能用）。
 
 会话结束 → Stop hook 自动生成断点 + 更新每日索引。`claude --resume <id>` 恢复接着干。
 
@@ -39,8 +39,23 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 ## 前置条件
 
 - **Claude Code** 已装好（你的 API 凭证会被自动复用，无需额外配）
-- **Obsidian** vault（默认 `~/obsidian/知识库`，别处设 `OBSIDIAN_VAULT` 环境变量）
 - **python3**（仅标准库，无需 pip install）
+- **Obsidian**（可选，见下）
+
+## 不装 Obsidian 也能用
+
+核心机制只是往磁盘写 markdown 文件，**不依赖 Obsidian 这个 app**。把 `OBSIDIAN_VAULT` 指向任意文件夹即可：
+
+```json
+// ~/.claude/settings.json 的 env
+"OBSIDIAN_VAULT": "/Users/你/任意文件夹"
+```
+
+不装 Obsidian 照样有：断点笔记、每日索引、状态 triage、标签/关键词（frontmatter）、`claude --resume` 恢复。
+
+只是会丢：`.base` 视图（打不开）、wikilink 跳转（`[[...]]` 变纯文本）、标签面板/图谱。即从"可交互知识库"降级成"带索引的会话日志文件夹"，仍然完全可用。
+
+装了 Obsidian 才有 Bases 视图按标签分组、点链接跳转、图谱看关联——体验更好，但非必需。
 
 ## API / 模型
 
