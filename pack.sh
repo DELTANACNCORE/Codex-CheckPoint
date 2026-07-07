@@ -3,8 +3,9 @@
 set -euo pipefail
 
 SETTINGS="$HOME/.claude/settings.json"
-# 读安装时存的 OBSIDIAN_VAULT（跟 checkpoint.py 用同一个值）
-if [ -f "$SETTINGS" ] && command -v python3 &>/dev/null; then
+# 优先用环境变量，其次读安装时存的 OBSIDIAN_VAULT（跟 checkpoint.py 一致）
+VAULT="${OBSIDIAN_VAULT:-}"
+if [ -z "$VAULT" ] && [ -f "$SETTINGS" ] && command -v python3 &>/dev/null; then
     VAULT=$(python3 -c "
 import json,os
 try:

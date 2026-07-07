@@ -260,6 +260,14 @@ def _llm_post(body_dict: dict):
         os.environ.get("ANTHROPIC_MODEL")
         or os.environ.get("ANTHROPIC_DEFAULT_SONNET_MODEL", "")
     )
+    # env 没有就读 settings.json 顶层 model（代理/托管场景常用）
+    if not model:
+        try:
+            sp = os.path.expanduser("~/.claude/settings.json")
+            d = json.load(open(sp, encoding="utf-8"))
+            model = d.get("model", "") if isinstance(d, dict) else ""
+        except Exception:
+            pass
     if not token or not model:
         return None
     body_dict["model"] = model
@@ -382,7 +390,7 @@ def _fallback_tags_from_files(files):
         for p in Path(f).parts:
             p_clean = p.strip().lower()
             base = p_clean.split(".")[0]  # 去扩展名
-            if not base or base in SKIP or base.startswith("."):
+            if not base or base in SKIP or base.startswith(".") or base.startswith("-"):
                 continue
             if base not in seen:
                 seen.add(base)

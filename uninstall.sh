@@ -58,7 +58,7 @@ PY
 fi
 
 # 清理 skills
-for skill in checkpoint synthesize; do
+for skill in checkpoint synthesize search; do
     D="$SKILLS_DIR/$skill"
     if [ -d "$D" ]; then
         rm -rf "$D"

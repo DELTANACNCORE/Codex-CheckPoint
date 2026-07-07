@@ -9,8 +9,9 @@ if [ -z "$ARCHIVE" ] || [ ! -f "$ARCHIVE" ]; then
 fi
 
 SETTINGS="$HOME/.claude/settings.json"
-# 优先读安装时存的 OBSIDIAN_VAULT
-if [ -f "$SETTINGS" ] && command -v python3 &>/dev/null; then
+# 优先用环境变量，其次读安装时存的 OBSIDIAN_VAULT
+VAULT="${OBSIDIAN_VAULT:-}"
+if [ -z "$VAULT" ] && [ -f "$SETTINGS" ] && command -v python3 &>/dev/null; then
     VAULT=$(python3 -c "
 import json,os
 try:
