@@ -25,7 +25,6 @@ PLANS_DIR = VAULT_ROOT / "Claude方案"
 PLANS_DIR_STR = str(PLANS_DIR)
 INDEX_DIR = PLANS_DIR / "会话索引"      # 每日索引 YYYY-MM-DD.md
 NOTE_DIR = PLANS_DIR / "会话断点"        # 单条会话断点 <主题>.md（与会话索引分开）
-ALLOWED_TAGS = ["产品", "功能开发", "日常问答"]
 
 # 强信号：明确指向“已形成方案/决策”的短语，命中 1 个即足以判定。
 STRONG_PLAN_PATTERNS = [
@@ -310,9 +309,7 @@ def _llm_post(body_dict: dict):
 def synthesize_topic_and_tags(user_prompts, written_files=None):
     """一次 LLM 调用，返回 {'topic': str|None, 'tags': list, 'keywords': list}。
 
-    同时参考用户提问和实际写/改的文件；两者不一致时以实际产出为准。
-    tags 限定在 ALLOWED_TAGS（产品/功能开发/日常问答）里挑 1-2 个；
-    keywords 是按内容额外给的 1-3 个自由关键词。
+    tags 完全动态，按对话内容和实际产出自由分类（宽泛+具体混合，可用/表示层级）。
     """
     written_files = written_files or []
     if not user_prompts and not written_files:
@@ -327,13 +324,12 @@ def synthesize_topic_and_tags(user_prompts, written_files=None):
     instruction = (
         "下面是一次 Claude Code 会话中用户的连续提问"
         + ("及实际写/改的文件" if written_files else "")
-        + "。请综合判断会话的真实主题（提问和产出不一致时，以实际产出为准），输出三行：\n"
-        "第1行：用不超过20个汉字概括这次会话的主题，不要句末标点、引号或解释。\n"
-        "第2行：从这三个固定分类里挑 1-2 个最贴合的，逗号分隔："
-        "产品、功能开发、日常问答。"
-        "（写功能/改代码→功能开发；讨论产品方向/需求→产品；纯问答/闲聊→日常问答）\n"
-        "第3行：按会话具体内容给 1-3 个关键词标签，逗号分隔，"
-        "描述实际涉及的技术/模块/场景（如 obsidian、hooks、登录、pts工时），不要 # 号。\n\n"
+        + "。请综合判断真实主题（提问和产出不一致时以产出为准），输出三行：\n"
+        "第1行：用不超过20个汉字概括主题，不要句末标点/引号/解释。\n"
+        "第2行：给这次会话打 2-5 个标签（逗号分隔），覆盖宽泛分类和具体技术/领域，"
+        "按实际内容自由发挥，可用 / 表示层级（如 obsidian/配置、运维/网络、前端/Vue）。"
+        "不要受任何固定标签限制，每次按实际内容自行归类。\n"
+        "第3行：1-3 个补充关键词（逗号分隔），用于精确搜索。\n\n"
         + prompts_text
         + files_text
     )
@@ -346,16 +342,14 @@ def synthesize_topic_and_tags(user_prompts, written_files=None):
     if len(lines) >= 2:
         for t in re.split(r"[,，、;；\s]+", lines[1]):
             t = t.strip().strip("#").strip("\"'“”‘’。.：: ")
-            if t in ALLOWED_TAGS and t not in tags:
+            if t and t not in tags:
                 tags.append(t)
-        tags = tags[:2]
-    if not tags:
-        tags = ["日常问答"]
+        tags = tags[:5]
     keywords = []
     if len(lines) >= 3:
         for t in re.split(r"[,，、;；\s]+", lines[2]):
             t = t.strip().strip("#").strip("\"'“”‘’。.：: ")
-            if t and t not in keywords and t not in ALLOWED_TAGS:
+            if t and t not in keywords:
                 keywords.append(t)
         keywords = keywords[:3]
     return {"topic": topic, "tags": tags, "keywords": keywords}
@@ -595,7 +589,7 @@ def main():
     if lite_mode:
         # Lite 模式：元数据由对话模型生成，直接覆盖，不调 LLM。
         ctx["topic"] = lite_topic or "未命名会话"
-        ctx["tags"] = [t for t in (lite_tags or []) if t in ALLOWED_TAGS] or ["日常问答"]
+        ctx["tags"] = [t for t in (lite_tags or []) if t]
         ctx["keywords"] = lite_keywords or []
         if existing_note:
             old_stem = existing_note.stem
