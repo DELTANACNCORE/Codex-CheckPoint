@@ -402,7 +402,8 @@ def _fallback_tags_from_files(files):
 
 
 _FORBIDDEN_FILENAME_RE = re.compile(r'[/\\:*?"<>|\r\n\t]')
-_BOXDRAW_RE = re.compile(r"[─-╿]")
+# Unicode Box Drawing 块 (U+2500–U+257F) + Block Elements (U+2580–U+259F)
+_BOXDRAW_RE = re.compile("[─-▟]")
 
 
 def sanitize_filename(name: str) -> str:
@@ -591,22 +592,6 @@ def find_related_notes(tags: list, current_stem: str) -> list:
     return related[:5]
 
 
-def _count_tags_in_dir(d: Path, tag_counts: dict):
-    """统计一个目录下所有 .md 的 tags（递归一层）。"""
-    for p in sorted(d.glob("*.md")):
-        try:
-            text = p.read_text(encoding="utf-8")
-        except Exception:
-            continue
-        tm = re.search(r'^tags:\s*(\[.*\])', text, re.MULTILINE)
-        if tm:
-            try:
-                for t in json.loads(tm.group(1)):
-                    tag_counts[t] = tag_counts.get(t, 0) + 1
-            except Exception:
-                pass
-
-
 def update_dashboard():
     """更新知识库首页：概览/状态/大类/小类/待恢复列表。"""
     notes = list(NOTE_DIR.glob("*.md"))
@@ -625,7 +610,7 @@ def update_dashboard():
         status = st.group(1) if st else ""
         if status in status_counts:
             status_counts[status] += 1
-        # 分类
+        # 分类 / 标签（一趟读出，不重复读）
         for c in read_frontmatter_list(n, "category"):
             cat_counts[c] = cat_counts.get(c, 0) + 1
         tm = re.search(r'^tags:\s*(\[.*\])', text, re.MULTILINE)
@@ -639,18 +624,27 @@ def update_dashboard():
         if status in ("interrupted", "incomplete_archive"):
             d = re.search(r'^date:\s*"([^"]+)"', text, re.MULTILINE)
             h1 = re.search(r'^# (.+)', text, re.MULTILINE)
-            display = h1.group(1) if h1 else n.stem
             emoji = STATUS_MAP.get(status, {}).get("emoji", "❓")
-            pending_entries.append(f"- {emoji} [[{n.stem}|{display}]] — {d.group(1) if d else '?'}")
+            pending_entries.append(f"- {emoji} [[{n.stem}|{h1.group(1) if h1 else n.stem}]] — {d.group(1) if d else '?'}")
 
-    # 归档文档标签
+    # 归档文档标签（一趟读完）
     doc_count = 0
     for sub in sorted(PLANS_DIR.glob("*/")):
         if sub.name in ("会话索引", "会话断点"):
             continue
-        md_files = list(sub.glob("*.md"))
-        doc_count += len(md_files)
-        _count_tags_in_dir(sub, tag_counts)
+        for md in sub.glob("*.md"):
+            doc_count += 1
+            try:
+                text = md.read_text(encoding="utf-8")
+            except Exception:
+                continue
+            tm = re.search(r'^tags:\s*(\[.*\])', text, re.MULTILINE)
+            if tm:
+                try:
+                    for t in json.loads(tm.group(1)):
+                        tag_counts[t] = tag_counts.get(t, 0) + 1
+                except Exception:
+                    pass
 
     completed = status_counts["completed"]
     interrupted = status_counts["interrupted"]
