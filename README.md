@@ -47,6 +47,14 @@ Windows：`powershell -ExecutionPolicy Bypass -File .\install.ps1 [--lite]`
 - **知识合成 + 搜索**：`/synthesize` 按标签合并同类断点→知识文档，`/search` 按关键词搜全库。文档含 `aliases` 别名提高命中率
 - **跨平台 + Provider 无关**：macOS/Linux/Windows，兼容 Anthropic/OpenAI/网关
 
+## 命令（任意目录可用）
+
+| 命令 | 作用 |
+|---|---|
+| `/checkpoint` | 手动生成/刷新当前会话断点 |
+| `/search <关键词>` | 搜索知识库（归档文档 + 断点标签） |
+| `/synthesize` | 按标签合并同类断点→知识文档 |
+
 ## 目录结构
 
 ```
