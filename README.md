@@ -4,6 +4,8 @@
 
 会话结束 → Stop hook 自动生成断点 + 更新每日索引。`claude --resume <id>` 恢复接着干。
 
+> **当前仅支持 Claude Code**。依赖 Claude Code hooks（Stop/PreToolUse）机制，暂不兼容其他 AI 编程工具（Cursor/Windsurf/Codex CLI 等）。欢迎社区的适配 PR。
+
 ## 功能
 
 - **自动**：会话结束自动生成断点笔记（任意目录启动 claude 都生效）
