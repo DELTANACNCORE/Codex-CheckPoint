@@ -70,15 +70,19 @@ vault/
 
 ## 迁移到新电脑
 
+**旧电脑打包**
 ```bash
-# 旧电脑：打包知识库 + 会话 transcript
-./pack.sh    # 生成 checkpoint-migrate-*.tar.gz
-
-# 传到新电脑，然后：
-./unpack.sh checkpoint-migrate-*.tar.gz
-git clone https://github.com/hjm4839-coder/checkpoint.git ~/obsidian
-cd ~/obsidian && ./install.sh
+./pack.sh                           # macOS / Linux
+powershell -File .\pack.ps1         # Windows
 ```
+
+**新电脑解包**
+```bash
+./unpack.sh <文件>                  # macOS / Linux
+powershell -File .\unpack.ps1 <文件>  # Windows
+```
+
+然后 clone 仓库 → install（同全新安装）。知识库 + transcript 完整迁移，`claude --resume` 可用。
 ## 卸载
 
 ```bash
