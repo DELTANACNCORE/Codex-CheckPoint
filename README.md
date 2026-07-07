@@ -1,6 +1,6 @@
 # 会话断点 (checkpoint)
 
-把 Claude Code 每次会话自动沉淀成「断点笔记」——主题命名、状态 triage、标签分类、可恢复。写入磁盘 markdown，配 Obsidian 可变成可交互知识库（不装也能用，最好还是安装）。
+把 Claude Code 每次会话自动沉淀成「断点笔记」——主题命名、状态 triage、标签分类、可恢复。写入磁盘 markdown，配 Obsidian 可变成可交互知识库（推荐安装，不装也能用）。
 
 会话结束 → Stop hook 自动生成断点 + 更新每日索引。`claude --resume <id>` 恢复接着干。
 
