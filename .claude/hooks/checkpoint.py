@@ -196,7 +196,7 @@ def extract_session_context(transcript_path: str) -> dict:
         tail_text = all_assistant_text[-2000:].lower()
         result["last_was_conclusion"] = any(m in tail_text for m in CONCLUSION_MARKERS)
 
-    except Exception as e:
+    except (json.JSONDecodeError, OSError) as e:
         print(f"[obsidian-hook] Warning: transcript parsing error: {e}", file=sys.stderr)
 
     return result
@@ -302,7 +302,7 @@ def _llm_post(body_dict: dict):
             data = json.loads(resp.read().decode("utf-8"))
         text = _extract_response_text(data)
         return text if text else None
-    except Exception as e:
+    except (urllib.error.URLError, OSError, json.JSONDecodeError, KeyError) as e:
         print(f"[obsidian-hook] LLM call failed: {e}", file=sys.stderr)
         return None
 
@@ -421,7 +421,7 @@ def find_note_by_session(index_dir: Path, session_id: str):
     for p in sorted(index_dir.glob("*.md")):
         try:
             text = p.read_text(encoding="utf-8")
-        except Exception:
+        except (FileNotFoundError, OSError):
             continue
         m = re.search(r'^session_id:\s*"([^"]+)"', text, re.MULTILINE)
         if m and m.group(1) == session_id:
@@ -527,7 +527,7 @@ def remove_index_rows(index_dir: Path, old_stem: str):
     for idx in index_dir.glob("*.md"):
         try:
             lines = idx.read_text(encoding="utf-8").splitlines(keepends=True)
-        except Exception:
+        except (FileNotFoundError, OSError):
             continue
         new_lines = [
             ln for ln in lines
@@ -604,7 +604,7 @@ def update_dashboard():
     for n in notes:
         try:
             text = n.read_text(encoding="utf-8")
-        except Exception:
+        except (FileNotFoundError, OSError):
             continue
         st = re.search(r'^status:\s*"([^"]+)"', text, re.MULTILINE)
         status = st.group(1) if st else ""
@@ -667,39 +667,29 @@ def update_dashboard():
     (VAULT_ROOT / "_知识库首页.md").write_text(dash, encoding="utf-8")
 
 
-def main():
-    transcript_path = ""
-    session_id = "unknown"
-    cwd = os.getcwd()
-    force = "--force" in sys.argv
-    # Lite 模式：元数据（主题/大类/标签/关键词）由对话模型提供，脚本不再调 LLM
-    lite_topic = None
-    lite_category = None
-    lite_tags = None
-    lite_keywords = None
-    for flag in ("--topic", "--category", "--tags", "--keywords"):
+
+def _parse_cli():
+    """解析命令行/stdin 输入，返回统一 dict。"""
+    result = {"transcript": "", "session": "unknown", "cwd": os.getcwd(), "force": False,
+              "lite": False, "lite_topic": None, "lite_category": [], "lite_tags": [], "lite_keywords": []}
+    result["force"] = "--force" in sys.argv
+    for flag, key, is_list in (("--topic", "lite_topic", False), ("--category", "lite_category", True),
+                                ("--tags", "lite_tags", True), ("--keywords", "lite_keywords", True)):
         if flag in sys.argv:
             idx = sys.argv.index(flag)
             if idx + 1 < len(sys.argv):
                 val = sys.argv[idx + 1]
-                if flag == "--topic":
-                    lite_topic = val
-                elif flag == "--category":
-                    lite_category = [t.strip() for t in val.split(",") if t.strip()]
-                elif flag == "--tags":
-                    lite_tags = [t.strip() for t in val.split(",") if t.strip()]
-                elif flag == "--keywords":
-                    lite_keywords = [t.strip() for t in val.split(",") if t.strip()]
-    lite_mode = lite_topic is not None
+                result[key] = [t.strip() for t in val.split(",") if t.strip()] if is_list else val
+    result["lite"] = result["lite_topic"] is not None
     if "--transcript" in sys.argv:
         idx = sys.argv.index("--transcript")
         if idx + 1 < len(sys.argv):
-            transcript_path = sys.argv[idx + 1]
+            result["transcript"] = sys.argv[idx + 1]
         if "--session-id" in sys.argv:
             sid_idx = sys.argv.index("--session-id")
             if sid_idx + 1 < len(sys.argv):
-                session_id = sys.argv[sid_idx + 1]
-        print(f"[obsidian-hook] Manual mode: transcript={transcript_path}, session={session_id}")
+                result["session"] = sys.argv[sid_idx + 1]
+        print(f"[obsidian-hook] Manual mode: transcript={result['transcript']}, session={result['session']}")
     else:
         raw = sys.stdin.read().strip()
         if not raw:
@@ -710,9 +700,32 @@ def main():
         except json.JSONDecodeError:
             print("[obsidian-hook] Invalid JSON, skipping")
             sys.exit(0)
-        transcript_path = event.get("transcript_path", "")
-        session_id = event.get("session_id", "unknown")
-        cwd = event.get("cwd", cwd)
+        result["transcript"] = event.get("transcript_path", "")
+        result["session"] = event.get("session_id", "unknown")
+        result["cwd"] = event.get("cwd", result["cwd"])
+    return result
+
+
+def _read_frontmatter_all(path):
+    """一趟读取笔记的 category/tags/keywords frontmatter 字段。"""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError):
+        return [], [], []
+    def _parse(key): 
+        m = re.search(rf'^{key}:\s*(\[.*\])', text, re.MULTILINE)
+        if not m: return []
+        try: return [str(t) for t in json.loads(m.group(1))] if isinstance(json.loads(m.group(1)), list) else []
+        except (json.JSONDecodeError, TypeError): return []
+    return _parse("category"), _parse("tags"), _parse("keywords")
+
+
+def main():
+    cli = _parse_cli()
+    transcript_path, session_id, cwd = cli["transcript"], cli["session"], cli["cwd"]
+    force, lite_mode = cli["force"], cli["lite"]
+    lite_topic, lite_category, lite_tags, lite_keywords = cli["lite_topic"], cli["lite_category"], cli["lite_tags"], cli["lite_keywords"]
+
     if not transcript_path:
         print("[obsidian-hook] No transcript path available, skipping")
         sys.exit(0)
@@ -753,9 +766,7 @@ def main():
         except Exception:
             pass
         # tags/keywords：已有则保留，没有则补一次综合（回填）。
-        existing_category = read_frontmatter_list(session_note_path, "category")
-        existing_tags = read_frontmatter_list(session_note_path, "tags")
-        existing_keywords = read_frontmatter_list(session_note_path, "keywords")
+        existing_category, existing_tags, existing_keywords = _read_frontmatter_all(session_note_path)
         if existing_category and existing_tags and existing_keywords:
             ctx["category"] = existing_category
             ctx["tags"] = existing_tags
