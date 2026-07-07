@@ -127,15 +127,33 @@ def extract_session_context(transcript_path: str) -> dict:
             # 跳过 slash 命令、skill 注入内容和过短的指令式消息。
             if msg.startswith("/"):
                 return False
-            if "<command-name>" in msg or "<command-message>" in msg:
-                return False
+            # Claude Code 注入到 transcript 的系统消息（含各类 XML 标签）
+            for tag in (
+                "<command-name>", "<command-message>", "<command-args>",
+                "<local-command-stdout>", "<local-command-caveat>",
+                "<task-notification>", "<task-id>", "<system-reminder>",
+                "<tool-use-id>", "<output-file>",
+            ):
+                if tag in msg:
+                    return False
             if "Base directory for this skill" in msg:
                 return False
             return len(msg) >= 4
 
+        def is_good_topic_candidate(msg: str) -> bool:
+            """排除含表格/代码/管道符的提问，选适合做主题的自然语言。"""
+            if "─" in msg or "│" in msg or "└" in msg or "┌" in msg or "├" in msg:
+                return False
+            if "```" in msg or "|" in msg:
+                return False
+            return len(msg) <= 300
+
         real_prompts = [m for m in user_messages if is_real_prompt(m)]
-        # 话题取最长的一条真实用户消息（信息量最大的近似）。
-        if real_prompts:
+        # 话题从自然语言提问中取（排除表格/代码块）
+        topic_candidates = [m for m in real_prompts if is_good_topic_candidate(m)]
+        if topic_candidates:
+            result["topic"] = max(topic_candidates, key=len)[:200].replace("\n", " ").replace("\r", " ").strip()
+        elif real_prompts:
             result["topic"] = max(real_prompts, key=len)[:200].replace("\n", " ").replace("\r", " ").strip()
         elif user_messages:
             result["topic"] = user_messages[0][:200].replace("\n", " ").replace("\r", " ").strip()
@@ -316,12 +334,16 @@ def synthesize_topic_and_tags(user_prompts, written_files=None):
 
 
 _FORBIDDEN_FILENAME_RE = re.compile(r'[/\\:*?"<>|\r\n\t]')
+_BOXDRAW_RE = re.compile(r"[─-╿]")
 
 
 def sanitize_filename(name: str) -> str:
-    """把主题转成合法文件名：去禁止字符、折叠空白。"""
-    name = _FORBIDDEN_FILENAME_RE.sub("_", name or "").strip().strip(".")
+    """把主题转成合法文件名：去禁止字符/制表符、折叠空白、截断 80 字符。"""
+    name = _BOXDRAW_RE.sub("", name or "")
+    name = _FORBIDDEN_FILENAME_RE.sub("_", name).strip().strip(".")
     name = re.sub(r"\s+", " ", name)
+    if len(name) > 80:
+        name = name[:80].rstrip()
     return name or "未命名"
 
 
