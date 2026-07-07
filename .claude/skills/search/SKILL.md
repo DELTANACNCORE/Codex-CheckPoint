@@ -47,3 +47,5 @@ grep -l 'tags:.*<关键词1>\|tags:.*<关键词2>' $OBSIDIAN_VAULT/Claude方案/
 ```
 
 没找到就诚实说找不到。不要编造结果。
+
+> Windows: `grep` 换成 `Select-String`，`$OBSIDIAN_VAULT` 换成 `$env:OBSIDIAN_VAULT`。

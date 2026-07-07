@@ -51,3 +51,5 @@ tags: [claude/方案, <相关标签>]
 ### 4. 报告
 
 展示合成的文档路径、覆盖的会话数、提炼的要点数。
+
+> Windows: `grep` 换成 `Select-String`，`$OBSIDIAN_VAULT` 换成 `$env:OBSIDIAN_VAULT`。
