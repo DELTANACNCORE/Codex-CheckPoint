@@ -11,6 +11,7 @@ $env:PYTHONIOENCODING = "utf-8"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $HookPath  = Join-Path $ScriptDir ".claude\hooks\checkpoint.py"
 $Settings  = Join-Path $env:USERPROFILE ".claude\settings.json"
+$DefaultVault = Join-Path $env:USERPROFILE "obsidian\知识库"
 
 Write-Host "[checkpoint] 仓库目录: $ScriptDir"
 Write-Host "[checkpoint] hook 脚本: $HookPath"
@@ -19,6 +20,12 @@ if (-not (Test-Path $HookPath)) {
     Write-Error "[checkpoint] 找不到 hook 脚本: $HookPath"
     exit 1
 }
+
+# 询问 Obsidian vault 路径
+Write-Host ""
+Write-Host "断点笔记会写到你的 Obsidian vault 下的 Claude方案/ 目录。"
+$Vault = Read-Host "你的 Obsidian vault 路径 [默认: $DefaultVault]"
+if (-not $Vault) { $Vault = $DefaultVault }
 
 $SettingsDir = Split-Path -Parent $Settings
 if (-not (Test-Path $SettingsDir)) {
@@ -30,6 +37,7 @@ $py = @'
 import json, sys, os, shutil
 settings_path = os.path.expanduser(sys.argv[1])
 hook_path = sys.argv[2]
+vault = os.path.expanduser(sys.argv[3])
 try:
     with open(settings_path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -39,6 +47,7 @@ if os.path.exists(settings_path):
     bak = settings_path + ".bak"
     shutil.copy2(settings_path, bak)
     print(f"[checkpoint] 已备份原配置: {bak}")
+# 注册 Stop hook（幂等去重）
 hooks = data.setdefault("hooks", {})
 stop = hooks.setdefault("Stop", [])
 stop[:] = [
@@ -46,20 +55,22 @@ stop[:] = [
     if not any("checkpoint.py" in h.get("command", "") for h in e.get("hooks", []))
 ]
 stop.append({"hooks": [{"type": "command", "command": f'python "{hook_path}"'}]})
+# 写入 OBSIDIAN_VAULT（覆盖旧值，保留其他 env）
+env = data.setdefault("env", {})
+env["OBSIDIAN_VAULT"] = vault
 with open(settings_path, "w", encoding="utf-8") as f:
     json.dump(data, f, ensure_ascii=False, indent=2)
     f.write("\n")
-print(f"[checkpoint] Stop hook 已注册到 {settings_path}")
-print(f"[checkpoint]   命令: python \"{hook_path}\"")
+print(f"[checkpoint] Stop hook 已注册: python \"{hook_path}\"")
+print(f"[checkpoint] OBSIDIAN_VAULT = {vault}")
 '@
 
-$py | python - $Settings $HookPath
+$py | python - $Settings $HookPath $Vault
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Write-Host ""
 Write-Host "[checkpoint] 安装完成。"
-Write-Host "[checkpoint] 接下来:"
-Write-Host "  1. API 凭证: Claude Code 已配的 ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN 自动复用。"
-Write-Host "  2. Obsidian vault: 默认 ~/obsidian/知识库。若在别处，在 settings.json 的 env 里加 OBSIDIAN_VAULT。"
-Write-Host "  3. 新开一个 claude 会话即生效。"
+Write-Host "  - API 凭证: Claude Code 已配的自动复用。"
+Write-Host "  - vault 路径已写入 env.OBSIDIAN_VAULT，想改重跑本脚本。"
+Write-Host "  - 新开一个 claude 会话即生效。"
 Write-Host "[checkpoint] 卸载: 删 settings.json 里 hooks.Stop 中指向 checkpoint.py 的条目，或恢复 .bak。"
