@@ -13,6 +13,11 @@
 - **方案归档闭环**：方案写入 `Claude方案/<项目名>/` 后断点自动变 ✅，产出列链接方案
 - **Bases 视图**：按标签/状态/项目/关键词筛选分组
 - **恢复提醒**：⚠️/📋 会话带 `claude --resume <id>` 命令
+- **知识库首页**：自动刷新仪表盘（断点总数/待恢复/热门标签）
+- **会话关联**：同一标签会话自动 wikilink 互连，形成知识链
+- **PreToolUse 提醒**：写 `Claude方案/` 文件时自动提醒已有相关文档，避免重复
+- **知识合成**：`/synthesize` 将同类断点提炼成知识文档
+- **LLM 兜底**：模型异常时从文件路径自动提取标签，不全空
 
 ## 安装
 
@@ -41,7 +46,10 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 --lite
 ```
 
 `install.sh` / `install.ps1` 会：
-- 把 Stop hook 注册到你的 `~/.claude/settings.json`（用户级，任意目录生效）
+- 把 Stop hook + PreToolUse hook 注册到 `~/.claude/settings.json`（用户级，任意目录生效）
+- 装 `/checkpoint` + `/synthesize` skill
+- 写 OBSIDIAN_VAULT 到 env
+- 创建 `~/.claude/CLAUDE.md`（若不存在，含归档约定+知识检索指令）
 - 备份原配置到 `.bak`
 - 幂等：重复运行不重复注册
 - **不动**你已有的 env / API 凭证 / 其他 hook
