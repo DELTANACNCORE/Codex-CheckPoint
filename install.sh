@@ -4,6 +4,14 @@
 # 幂等：重复运行不会重复注册。不会动你已有的 env / theme / 其他 hook。
 set -euo pipefail
 
+LITE=false
+if [ "${1:-}" = "--lite" ]; then
+    LITE=true
+    echo "[checkpoint] 安装模式: Lite（仅手动 /checkpoint，不额外调 API）"
+else
+    echo "[checkpoint] 安装模式: Full（自动 Stop hook + 手动 /checkpoint）"
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOOK_PATH="$SCRIPT_DIR/.claude/hooks/checkpoint.py"
 SETTINGS="$HOME/.claude/settings.json"
@@ -25,11 +33,18 @@ VAULT="${VAULT:-$DEFAULT_VAULT}"
 
 mkdir -p "$HOME/.claude"
 
-python3 - "$SETTINGS" "$HOOK_PATH" "$VAULT" <<'PY'
+if [ "$LITE" = false ]; then
+  HOOK_FLAG="false"
+else
+  HOOK_FLAG="true"
+fi
+
+python3 - "$SETTINGS" "$HOOK_PATH" "$VAULT" "$HOOK_FLAG" <<'PY'
 import json, sys, os, shutil
 settings_path = os.path.expanduser(sys.argv[1])
 hook_path = sys.argv[2]
 vault = os.path.expanduser(sys.argv[3])
+lite = sys.argv[4] == "true" if len(sys.argv) > 4 else False
 
 try:
     with open(settings_path, "r", encoding="utf-8") as f:
@@ -42,29 +57,36 @@ if os.path.exists(settings_path):
     shutil.copy2(settings_path, bak)
     print(f"[checkpoint] 已备份原配置: {bak}")
 
-# 注册 Stop hook（幂等：去重旧条目）
-hooks = data.setdefault("hooks", {})
-stop = hooks.setdefault("Stop", [])
-stop[:] = [
-    e for e in stop
-    if not any("checkpoint.py" in h.get("command", "") for h in e.get("hooks", []))
-]
-stop.append({"hooks": [{"type": "command", "command": f"python3 {hook_path}"}]})
-
-# 写入 OBSIDIAN_VAULT（覆盖旧值，保留其他 env 不动）
+# 写入 OBSIDIAN_VAULT（覆盖旧值，保留其他 env）
 env = data.setdefault("env", {})
 env["OBSIDIAN_VAULT"] = vault
+
+# 非 Lite 模式才注册 Stop hook
+if not lite:
+    hooks = data.setdefault("hooks", {})
+    stop = hooks.setdefault("Stop", [])
+    stop[:] = [
+        e for e in stop
+        if not any("checkpoint.py" in h.get("command", "") for h in e.get("hooks", []))
+    ]
+    stop.append({"hooks": [{"type": "command", "command": f"python3 {hook_path}"}]})
+    print(f"[checkpoint] ✓ Stop hook 已注册: python3 {hook_path}")
+else:
+    print("[checkpoint]   Lite 模式，跳过 Stop hook（仅手动 /checkpoint）")
 
 with open(settings_path, "w", encoding="utf-8") as f:
     json.dump(data, f, ensure_ascii=False, indent=2)
     f.write("\n")
 
-print(f"[checkpoint] ✓ Stop hook 已注册: python3 {hook_path}")
 print(f"[checkpoint] ✓ OBSIDIAN_VAULT = {vault}")
 PY
 
 # 装 skill 到用户级（任意目录可用 /checkpoint）
-SKILL_SRC="$SCRIPT_DIR/.claude/skills/checkpoint"
+if [ "$LITE" = true ]; then
+    SKILL_SRC="$SCRIPT_DIR/.claude/skills/checkpoint-lite"
+else
+    SKILL_SRC="$SCRIPT_DIR/.claude/skills/checkpoint"
+fi
 SKILL_DST="$HOME/.claude/skills/checkpoint"
 mkdir -p "$HOME/.claude/skills"
 rm -rf "$SKILL_DST"
@@ -105,11 +127,12 @@ fi
 
 cat <<EOF
 
-[checkpoint] 安装完成。
+[checkpoint] 安装完成（$([ "$LITE" = true ] && echo 'Lite' || echo 'Full') 模式）。
 
-  - API 凭证：Claude Code 已配的 ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN 自动复用，无需额外配置。
+  - API / LLM：Full 模式自动调 LLM 起标题打标签；Lite 模式仅手动 /checkpoint，用对话模型生成元数据，不额外调 API。
   - vault 路径已写入 settings.json 的 env.OBSIDIAN_VAULT，想改重跑本脚本即可。
-  - 新开一个 claude 会话即生效（当前会话不重载 hook）。
+  $([ "$LITE" = false ] && echo '- 新开一个 claude 会话即生效（当前会话不重载 hook）。')
+  $([ "$LITE" = true ] && echo '- 仅 /checkpoint 手动生成断点，无自动 Stop hook。')
 
 卸载：删 ~/.claude/settings.json 里 hooks.Stop 中指向 checkpoint.py 的条目（或恢复 .bak）。
 EOF

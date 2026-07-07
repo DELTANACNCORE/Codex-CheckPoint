@@ -542,6 +542,22 @@ def main():
     session_id = "unknown"
     cwd = os.getcwd()
     force = "--force" in sys.argv
+    # Lite 模式：元数据（主题/标签/关键词）由对话模型提供，脚本不再调 LLM
+    lite_topic = None
+    lite_tags = None
+    lite_keywords = None
+    for flag in ("--topic", "--tags", "--keywords"):
+        if flag in sys.argv:
+            idx = sys.argv.index(flag)
+            if idx + 1 < len(sys.argv):
+                val = sys.argv[idx + 1]
+                if flag == "--topic":
+                    lite_topic = val
+                elif flag == "--tags":
+                    lite_tags = [t.strip() for t in val.split(",") if t.strip()]
+                elif flag == "--keywords":
+                    lite_keywords = [t.strip() for t in val.split(",") if t.strip()]
+    lite_mode = lite_topic is not None
     if "--transcript" in sys.argv:
         idx = sys.argv.index("--transcript")
         if idx + 1 < len(sys.argv):
@@ -576,7 +592,20 @@ def main():
     os.makedirs(NOTE_DIR, exist_ok=True)
     existing_note = find_note_by_session(NOTE_DIR, session_id)
     old_stem = None
-    if existing_note and not force:
+    if lite_mode:
+        # Lite 模式：元数据由对话模型生成，直接覆盖，不调 LLM。
+        ctx["topic"] = lite_topic or "未命名会话"
+        ctx["tags"] = [t for t in (lite_tags or []) if t in ALLOWED_TAGS] or ["日常问答"]
+        ctx["keywords"] = lite_keywords or []
+        if existing_note:
+            old_stem = existing_note.stem
+            existing_note.unlink()
+        fname = sanitize_filename(ctx["topic"])
+        candidate = NOTE_DIR / f"{fname}.md"
+        if candidate.exists():
+            candidate = NOTE_DIR / f"{fname}-{session_id[:8]}.md"
+        session_note_path = candidate
+    elif existing_note and not force:
         # 已有笔记：沿用其文件名与 H1 标题（可能已被手动编辑成更贴切的主题）。
         session_note_path = existing_note
         try:

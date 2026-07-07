@@ -1,4 +1,4 @@
-﻿# checkpoint 机制安装脚本 (Windows / PowerShell)
+﻿﻿# checkpoint 机制安装脚本 (Windows / PowerShell)
 # 把 Stop hook 注册到用户级 %USERPROFILE%\.claude\settings.json
 # 幂等：重复运行不重复注册。不动已有的 env / 其他 hook。
 $ErrorActionPreference = "Stop"
@@ -7,6 +7,13 @@ $ErrorActionPreference = "Stop"
 chcp 65001 > $null
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $env:PYTHONIOENCODING = "utf-8"
+
+$Lite = $args[0] -eq "--lite"
+if ($Lite) {
+    Write-Host "[checkpoint] 安装模式: Lite（仅手动 /checkpoint，不额外调 API）"
+} else {
+    Write-Host "[checkpoint] 安装模式: Full（自动 Stop hook + 手动 /checkpoint）"
+}
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $HookPath  = Join-Path $ScriptDir ".claude\hooks\checkpoint.py"
@@ -38,6 +45,7 @@ import json, sys, os, shutil
 settings_path = os.path.expanduser(sys.argv[1])
 hook_path = sys.argv[2]
 vault = os.path.expanduser(sys.argv[3])
+lite = sys.argv[4] == "true" if len(sys.argv) > 4 else False
 try:
     with open(settings_path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -47,29 +55,29 @@ if os.path.exists(settings_path):
     bak = settings_path + ".bak"
     shutil.copy2(settings_path, bak)
     print(f"[checkpoint] 已备份原配置: {bak}")
-# 注册 Stop hook（幂等去重）
-hooks = data.setdefault("hooks", {})
-stop = hooks.setdefault("Stop", [])
-stop[:] = [
-    e for e in stop
-    if not any("checkpoint.py" in h.get("command", "") for h in e.get("hooks", []))
-]
-stop.append({"hooks": [{"type": "command", "command": f'python "{hook_path}"'}]})
-# 写入 OBSIDIAN_VAULT（覆盖旧值，保留其他 env）
+# 写入 OBSIDIAN_VAULT
 env = data.setdefault("env", {})
 env["OBSIDIAN_VAULT"] = vault
+# 非 Lite 模式才注册 Stop hook
+if not lite:
+    hooks = data.setdefault("hooks", {})
+    stop = hooks.setdefault("Stop", [])
+    stop[:] = [e for e in stop if not any("checkpoint.py" in h.get("command","") for h in e.get("hooks",[]))]
+    stop.append({"hooks":[{"type":"command","command":f'python "{hook_path}"'}]})
+    print(f"[checkpoint] Stop hook 已注册: python \"{hook_path}\"")
+else:
+    print("[checkpoint]   Lite 模式，跳过 Stop hook")
 with open(settings_path, "w", encoding="utf-8") as f:
     json.dump(data, f, ensure_ascii=False, indent=2)
     f.write("\n")
-print(f"[checkpoint] Stop hook 已注册: python \"{hook_path}\"")
 print(f"[checkpoint] OBSIDIAN_VAULT = {vault}")
 '@
 
-$py | python - $Settings $HookPath $Vault
+$py | python - $Settings $HookPath $Vault $(if ($Lite) { "true" } else { "false" })
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 # 装 skill 到用户级（任意目录可用 /checkpoint）
-$SkillSrc = Join-Path $ScriptDir ".claude\skills\checkpoint"
+$SkillSrc = if ($Lite) { Join-Path $ScriptDir ".claude\skills\checkpoint-lite" } else { Join-Path $ScriptDir ".claude\skills\checkpoint" }
 $SkillDst = Join-Path $env:USERPROFILE ".claude\skills\checkpoint"
 $SkillDir = Split-Path -Parent $SkillDst
 if (-not (Test-Path $SkillDir)) { New-Item -ItemType Directory -Path $SkillDir | Out-Null }
@@ -111,8 +119,8 @@ tags: [claude/方案, ...]
 }
 
 Write-Host ""
-Write-Host "[checkpoint] 安装完成。"
-Write-Host "  - API 凭证: Claude Code 已配的自动复用。"
-Write-Host "  - vault 路径已写入 env.OBSIDIAN_VAULT，想改重跑本脚本。"
-Write-Host "  - 新开一个 claude 会话即生效。"
+Write-Host "[checkpoint] 安装完成（$(if ($Lite) { 'Lite' } else { 'Full' }) 模式）。"
+Write-Host "  - API / LLM：Full 模式自动调 LLM；Lite 模式仅手动 /checkpoint，用对话模型，不额外调 API。"
+Write-Host "  - vault 路径已写入 env.OBSIDIAN_VAULT。"
+if (-not $Lite) { Write-Host "  - 新开 claude 会话即生效。" } else { Write-Host "  - 仅 /checkpoint 手动生成断点，无自动 Stop hook。" }
 Write-Host "[checkpoint] 卸载: 删 settings.json 里 hooks.Stop 中指向 checkpoint.py 的条目，或恢复 .bak。"
