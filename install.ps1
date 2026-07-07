@@ -1,4 +1,4 @@
-﻿﻿﻿# checkpoint 机制安装脚本 (Windows / PowerShell)
+﻿﻿﻿﻿# checkpoint 机制安装脚本 (Windows / PowerShell)
 # 把 Stop hook 注册到用户级 %USERPROFILE%\.claude\settings.json
 # 幂等：重复运行不重复注册。不动已有的 env / 其他 hook。
 $ErrorActionPreference = "Stop"
@@ -113,6 +113,19 @@ if (-not (Test-Path $UserClaude)) {
     @'
 # 全局指令
 
+## 回答前必须检索知识库
+
+在回答任何技术、方案、配置、运维、开发类问题之前，必须先搜索知识库：
+
+1. 从用户问题中提取 1-3 个关键词
+2. `grep -l "<关键词>" $OBSIDIAN_VAULT/Claude方案/*/*.md` 找匹配文档
+3. 同时 grep 标签：`grep -l 'tags:.*<关键词>' $OBSIDIAN_VAULT/Claude方案/*/*.md`
+4. Read 最相关的 1-2 篇，已有结论直接引用，只补充新内容
+5. 读了 2 篇没找到 → 告诉用户"知识库暂无相关记录"，然后正常回答
+6. 纯闲聊/简单问答可跳过检索
+
+知识库位置：`$OBSIDIAN_VAULT/Claude方案/`（默认 `~/obsidian/知识库/Claude方案/`）
+
 ## 方案归档
 
 方案敲定后直接 Write 到 `$OBSIDIAN_VAULT/Claude方案/<项目名>/<方案标题>.md`。
@@ -122,7 +135,7 @@ if (-not (Test-Path $UserClaude)) {
 ---
 date: YYYY-MM-DD
 project: 项目名
-tags: [claude/方案, ...]
+tags: [claude/方案, <分类标签>, <关键词>]
 ---
 # 标题
 ## 背景  ## 方案  ## 关键决策  ## 实施步骤  ## 相关笔记
