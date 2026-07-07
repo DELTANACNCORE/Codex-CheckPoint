@@ -8,16 +8,26 @@ if [ -z "$ARCHIVE" ] || [ ! -f "$ARCHIVE" ]; then
     exit 1
 fi
 
-VAULT="${OBSIDIAN_VAULT:-$HOME/obsidian/知识库}"
+echo "知识库解包到哪个目录？"
+read -r -p "Obsidian vault 路径 [默认: $HOME/obsidian/知识库]: " VAULT
+VAULT="${VAULT:-$HOME/obsidian/知识库}"
+VAULT="${VAULT/#~/$HOME}"
 
 echo "[unpack] 知识库 → $VAULT"
 mkdir -p "$VAULT"
-tar -xzf "$ARCHIVE" -C "$VAULT" Claude方案/ 2>/dev/null && echo "[unpack]   Claude方案/ ✓"
+tar -xzf "$ARCHIVE" -C "$VAULT" Claude方案/ && echo "[unpack]   Claude方案/ ✓"
+
+# 首页移到 vault 根
+if [ -f "$VAULT/Claude方案/_知识库首页.md" ]; then
+    mv "$VAULT/Claude方案/_知识库首页.md" "$VAULT/_知识库首页.md" 2>/dev/null || true
+    echo "[unpack]   _知识库首页.md → vault 根 ✓"
+fi
+
 echo "[unpack] transcript → $HOME/.claude/"
 mkdir -p "$HOME/.claude"
-tar -xzf "$ARCHIVE" -C "$HOME" .claude/projects/ 2>/dev/null && echo "[unpack]   .claude/projects/ ✓"
+tar -xzf "$ARCHIVE" -C "$HOME" .claude/projects/ && echo "[unpack]   transcript ✓"
 
 echo
-echo "[unpack] 完成。clone 仓库 → install："
+echo "[unpack] 完成。接下来："
 echo "  git clone https://github.com/hjm4839-coder/checkpoint.git ~/obsidian"
 echo "  cd ~/obsidian && ./install.sh"
