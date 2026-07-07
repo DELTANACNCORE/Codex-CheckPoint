@@ -20,14 +20,24 @@
 ```bash
 git clone <仓库地址> ~/obsidian   # 或任意位置
 cd ~/obsidian
+
+# Full 模式（自动 Stop hook，推荐）
 ./install.sh
+
+# 或 Lite 模式（仅手动 /checkpoint，不额外调 API）
+./install.sh --lite
 ```
 
 **Windows（PowerShell）**
 ```powershell
 git clone <仓库地址> $env:USERPROFILE\obsidian
 cd $env:USERPROFILE\obsidian
+
+# Full 模式
 powershell -ExecutionPolicy Bypass -File .\install.ps1
+
+# 或 Lite 模式
+powershell -ExecutionPolicy Bypass -File .\install.ps1 --lite
 ```
 
 `install.sh` / `install.ps1` 会：
@@ -35,6 +45,18 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 - 备份原配置到 `.bak`
 - 幂等：重复运行不重复注册
 - **不动**你已有的 env / API 凭证 / 其他 hook
+
+### 两种模式
+
+| | Full（默认） | Lite |
+|---|---|---|
+| **自动 Stop hook** | ✅ 会话结束自动生成断点 | ❌ |
+| **手动 /checkpoint** | ✅ 脚本调 LLM 起标题/标签 | ✅ **对话模型**生成标题/标签 |
+| **额外 API 调用** | 每次 Stop hook 1 次 | **0** |
+| **标签/关键词** | LLM 自动生成 | Claude 在对话中生成 |
+| **适合** | 有 API 凭证、要自动化 | 不想额外调 API、只要手动管家 |
+
+Lite 版 `/checkpoint` 用**当前对话模型**（你已经在对话中用的那个）分析会话内容，起标题、打标签，传给脚本写笔记——全程不额外调 LLM。
 
 ## 前置条件
 
