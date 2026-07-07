@@ -221,16 +221,14 @@ def _extract_response_text(data: dict):
     """从多种 API 响应格式中提取文本返回（Anthropic / OpenAI / 网关等），失败返回 None。"""
     if not isinstance(data, dict):
         return None
-    # Anthropic Messages 格式（含 baizhi 等网关代理 / 思考型模型）
+    # Anthropic Messages 格式（含思考型模型如 deepseek-v4-pro）
     content = data.get("content")
     if isinstance(content, list):
         for block in content:
             if isinstance(block, dict) and block.get("type") == "text" and block.get("text", "").strip():
                 return block["text"].strip()
-        # 思考型模型只有 thinking 没有 text 时，取最后一块 thinking 做兜底
-        for block in content:
-            if isinstance(block, dict) and block.get("type") == "thinking" and block.get("thinking", "").strip():
-                return block["thinking"].strip()
+        # 没有 text 块：思考型模型只产 thinking（指令太长吞了 token 预算）——不回退到 thinking，
+        # 它的内容是推理过程不是答案，强行用作标签反而污染。返回 None，由调用方兜底。
     # OpenAI Chat Completions 格式
     choices = data.get("choices")
     if isinstance(choices, list) and choices:
@@ -335,7 +333,7 @@ def synthesize_topic_and_tags(user_prompts, written_files=None):
         + prompts_text
         + files_text
     )
-    text = _llm_post({"max_tokens": 300, "messages": [{"role": "user", "content": instruction}]})
+    text = _llm_post({"max_tokens": 500, "messages": [{"role": "user", "content": instruction}]})
     if not text:
         # LLM 完全失败 → 从文件路径兜底
         tags, keywords = _fallback_tags_from_files(written_files or [])
@@ -366,7 +364,8 @@ def _fallback_tags_from_files(files):
     """LLM 失败时，从写/改的文件路径中提取标签和关键词。"""
     SKIP = {"", "~", "home", "user", "users", "projects", "src", "code", "dev",
             "desktop", "documents", "downloads", "tmp", "var", "opt", "etc", "usr",
-            "library", "applications"}
+            "library", "applications", "claude", "hooks", "skills", "memory",
+            "checkpoint-convention", "readme-update-rule", "settings", "ouyangkai"}
     tags, keywords = [], []
     seen = set()
     for f in sorted(files):
