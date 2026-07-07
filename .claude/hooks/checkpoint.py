@@ -218,6 +218,34 @@ def determine_session_status(ctx: dict) -> str:
     return "interrupted"
 
 
+def _extract_response_text(data: dict):
+    """从多种 API 响应格式中提取文本返回（Anthropic / OpenAI / 网关等），失败返回 None。"""
+    if not isinstance(data, dict):
+        return None
+    # Anthropic Messages 格式（含 baizhi 等网关代理）
+    content = data.get("content")
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                t = block.get("text", "")
+                if t:
+                    return t.strip()
+    # OpenAI Chat Completions 格式
+    choices = data.get("choices")
+    if isinstance(choices, list) and choices:
+        msg = choices[0].get("message", {})
+        if isinstance(msg, dict):
+            t = msg.get("content", "")
+            if t:
+                return str(t).strip()
+    # 其他常见简化格式（部分网关/代理返回）
+    for key in ("text", "output", "response", "result", "answer"):
+        v = data.get(key)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return None
+
+
 def _llm_post(body_dict: dict):
     """发 Messages API 请求，返回响应文本或 None。
 
@@ -272,7 +300,8 @@ def _llm_post(body_dict: dict):
                     pass
         with urllib.request.urlopen(req, timeout=20, context=ssl_ctx) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-        return data["content"][0]["text"].strip()
+        text = _extract_response_text(data)
+        return text if text else None
     except Exception as e:
         print(f"[obsidian-hook] LLM call failed: {e}", file=sys.stderr)
         return None
