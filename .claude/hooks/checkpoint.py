@@ -25,6 +25,10 @@ PLANS_DIR = VAULT_ROOT / "Claude方案"
 PLANS_DIR_STR = str(PLANS_DIR)
 INDEX_DIR = PLANS_DIR / "会话索引"      # 每日索引 YYYY-MM-DD.md
 NOTE_DIR = PLANS_DIR / "会话断点"        # 单条会话断点 <主题>.md（与会话索引分开）
+EXPERIENCE_DIR = PLANS_DIR / "可复用经验" # 跨项目复用的经验摘要
+PROJECT_SUMMARY_NAME = "项目总结.md"      # 每个项目目录内的滚动项目摘要
+PROJECT_EXPERIENCE_SUFFIX = "可复用经验.md"
+PROJECT_SUMMARY_MAX_CHARS = 18000
 
 # 强信号：明确指向“已形成方案/决策”的短语，命中 1 个即足以判定。
 STRONG_PLAN_PATTERNS = [
@@ -118,7 +122,7 @@ def extract_session_context(transcript_path: str) -> dict:
                                     if PLANS_DIR_STR in abs_path:
                                         try:
                                             rel = Path(abs_path).relative_to(PLANS_DIR)
-                                            if len(rel.parts) > 1 and rel.parts[0] not in ("会话索引", "会话断点"):
+                                            if len(rel.parts) > 1 and rel.parts[0] not in ("会话索引", "会话断点", "可复用经验"):
                                                 result["written_files"].add(abs_path)
                                         except Exception:
                                             result["written_files"].add(abs_path)
@@ -601,6 +605,230 @@ def find_related_notes(tags: list, current_stem: str) -> list:
     return related[:5]
 
 
+def _read_text_limited(path: Path, max_chars: int = 6000) -> str:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError, UnicodeDecodeError):
+        return ""
+    if len(text) <= max_chars:
+        return text
+    head = text[: max_chars // 2]
+    tail = text[-max_chars // 2 :]
+    return head + "\n\n...（中间内容已截断）...\n\n" + tail
+
+
+def _extract_h1(text: str, fallback: str) -> str:
+    m = re.search(r"^#\s+(.+)$", text or "", re.MULTILINE)
+    if m:
+        return m.group(1).strip()
+    return fallback
+
+
+def _project_doc_paths(project: str) -> list:
+    """返回某个项目目录下可作为总结材料的归档文档。"""
+    project_dir = PLANS_DIR / project
+    if not project_dir.is_dir():
+        return []
+    docs = []
+    for p in sorted(project_dir.glob("*.md")):
+        if p.name == PROJECT_SUMMARY_NAME:
+            continue
+        if p.name.endswith(PROJECT_EXPERIENCE_SUFFIX):
+            continue
+        docs.append(p)
+    return docs
+
+
+def _collect_project_material(project: str, ctx: dict, session_note_path: Path) -> str:
+    """收集项目归档、旧总结、当前断点，限制体积后交给 LLM。"""
+    project_dir = PLANS_DIR / project
+    parts = [f"项目名：{project}"]
+    summary_path = project_dir / PROJECT_SUMMARY_NAME
+    if summary_path.exists():
+        parts.append("\n## 旧项目总结（用于增量更新）\n" + _read_text_limited(summary_path, 5000))
+
+    if session_note_path and session_note_path.exists():
+        parts.append("\n## 本次会话断点\n" + _read_text_limited(session_note_path, 4000))
+
+    written_in_project = []
+    for f in sorted(ctx.get("written_files", [])):
+        try:
+            p = Path(f)
+            rel = p.relative_to(project_dir)
+            if len(rel.parts) >= 1:
+                written_in_project.append(p)
+        except Exception:
+            pass
+    if written_in_project:
+        parts.append("\n## 本次直接产出文件\n" + "\n".join(f"- {p.name}" for p in written_in_project))
+
+    docs = _project_doc_paths(project)
+    if docs:
+        doc_parts = []
+        for p in docs[:12]:
+            text = _read_text_limited(p, 3500)
+            title = _extract_h1(text, p.stem)
+            doc_parts.append(f"\n### {title}（{p.name}）\n{text}")
+        parts.append("\n## 项目归档文档\n" + "\n".join(doc_parts))
+
+    material = "\n".join(parts)
+    if len(material) > PROJECT_SUMMARY_MAX_CHARS:
+        material = material[:PROJECT_SUMMARY_MAX_CHARS] + "\n\n...（项目材料超出长度，已截断）..."
+    return material
+
+
+def _frontmatter(title_tags: list, project: str, kind: str) -> str:
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    tags = ["claude/方案", "知识库/自动总结", kind] + [t for t in title_tags if t]
+    # 去重但保持顺序
+    unique_tags = []
+    for t in tags:
+        if t not in unique_tags:
+            unique_tags.append(t)
+    return f"""---
+date: {today}
+project: {project}
+tags: {json.dumps(unique_tags, ensure_ascii=False)}
+aliases: {json.dumps([project, "项目总结", "可复用经验", "经验摘要"], ensure_ascii=False)}
+---
+"""
+
+
+def _fallback_project_summary(project: str, ctx: dict, session_note_path: Path) -> str:
+    files = []
+    for f in sorted(ctx.get("written_files", [])):
+        try:
+            p = Path(f)
+            if p.is_relative_to(PLANS_DIR / project):
+                files.append(f"- [[{p.stem}]]")
+        except Exception:
+            pass
+    prompts = "\n".join(f"- {p}" for p in ctx.get("user_prompts", [])[:5]) or "- （未提取到用户提问）"
+    outputs = "\n".join(files) if files else "- （本次未新增项目归档）"
+    session_link = f"[[{session_note_path.stem}]]" if session_note_path else "（无）"
+    return f"""# {project} 项目总结
+
+## 项目定位
+
+（LLM 不可用，以下为规则兜底生成的滚动摘要。）
+
+## 最近会话脉络
+
+{prompts}
+
+## 归档产出
+
+{outputs}
+
+## 当前状态
+
+- 最近断点：{session_link}
+- 会话状态：{ctx.get('status', 'unknown')}
+
+## 后续恢复入口
+
+优先阅读本文件，再阅读最近断点和归档产出，避免恢复完整长 transcript。
+"""
+
+
+def _fallback_experience(project: str, ctx: dict, session_note_path: Path) -> str:
+    session_link = f"[[{session_note_path.stem}]]" if session_note_path else "（无）"
+    return f"""# {project} 可复用经验
+
+## 可复用经验
+
+- 项目结束或阶段结束后，用项目总结承接上下文，下一次只读取摘要和 1-2 篇关键归档，避免恢复完整长会话。
+- 每个项目保留独立目录，方案、部署记录、修复记录都写成可检索 Markdown。
+
+## 避坑清单
+
+- 不要把新项目接在旧项目长会话后继续开发，否则 `cache_read_input_tokens` 会被旧上下文放大。
+- 不要只验证“接口存在”，要验证“前端入口可见、按钮可触发、用户能完成闭环”。
+
+## 下次同类项目流程
+
+1. 新会话读取 `项目总结.md`。
+2. 只补读与当前任务最相关的 1-2 篇归档。
+3. 阶段结束写方案/修复记录。
+4. Stop Hook 自动刷新项目总结和可复用经验。
+
+## 来源
+
+- 最近断点：{session_link}
+"""
+
+
+def synthesize_project_summary(project: str, ctx: dict, session_note_path: Path) -> str:
+    material = _collect_project_material(project, ctx, session_note_path)
+    instruction = f"""你是 Obsidian 知识库整理助手。请基于下面材料，为项目“{project}”生成一份可供新 Claude Code 会话快速接手的滚动项目总结。
+
+要求：
+- 只输出 Markdown 正文，不要输出 YAML frontmatter，不要代码围栏。
+- 控制在 1200-2000 字，重信息密度，避免寒暄。
+- 目标是替代恢复完整 transcript，减少长上下文 token 消耗。
+- 必须包含这些二级标题：项目定位、当前状态、关键架构与决策、已验证闭环、部署与运行要点、重要经验、后续恢复入口、相关笔记。
+- “后续恢复入口”要明确说明下一次新会话优先读哪些笔记。
+- 如果材料不足，用“待补充”标注，不要编造。
+
+材料：
+{material}
+"""
+    text = _llm_post({"max_tokens": 2400, "messages": [{"role": "user", "content": instruction}]})
+    return text.strip() if text else _fallback_project_summary(project, ctx, session_note_path)
+
+
+def synthesize_reusable_experience(project: str, ctx: dict, session_note_path: Path) -> str:
+    material = _collect_project_material(project, ctx, session_note_path)
+    instruction = f"""你是工程经验沉淀助手。请从项目“{project}”材料中提炼跨项目可复用经验，生成一份给未来同类项目复用的经验摘要。
+
+要求：
+- 只输出 Markdown 正文，不要输出 YAML frontmatter，不要代码围栏。
+- 控制在 800-1600 字。
+- 不要复述项目流水账，只提炼可迁移的方法、检查清单、避坑点。
+- 必须包含这些二级标题：可复用经验、避坑清单、下次同类项目流程、验收检查清单、可检索关键词、来源。
+- 重点关注：架构取舍、部署复用、验证闭环、前端接线可见性、token/上下文控制、中文/编码/容器等可复用问题。
+- 如果材料不足，用“待补充”标注，不要编造。
+
+材料：
+{material}
+"""
+    text = _llm_post({"max_tokens": 2000, "messages": [{"role": "user", "content": instruction}]})
+    return text.strip() if text else _fallback_experience(project, ctx, session_note_path)
+
+
+def update_project_knowledge(ctx: dict, session_note_path: Path):
+    """为本次涉及的项目刷新滚动总结，并沉淀跨项目可复用经验。"""
+    projects = sorted(ctx.get("projects", []))
+    if not projects:
+        return []
+    os.makedirs(EXPERIENCE_DIR, exist_ok=True)
+    written = []
+    for project in projects:
+        project_dir = PLANS_DIR / project
+        if not project_dir.is_dir():
+            continue
+        ctx_with_status = dict(ctx)
+        ctx_with_status["status"] = ctx.get("status", "completed")
+
+        summary_body = synthesize_project_summary(project, ctx_with_status, session_note_path)
+        summary_path = project_dir / PROJECT_SUMMARY_NAME
+        summary_path.write_text(
+            _frontmatter(["项目总结"], project, "项目总结") + "\n" + summary_body.strip() + "\n",
+            encoding="utf-8",
+        )
+        written.append(summary_path)
+
+        experience_body = synthesize_reusable_experience(project, ctx_with_status, session_note_path)
+        exp_name = f"{sanitize_filename(project)}-{PROJECT_EXPERIENCE_SUFFIX}"
+        exp_path = EXPERIENCE_DIR / exp_name
+        exp_path.write_text(
+            _frontmatter(["可复用经验"], project, "可复用经验") + "\n" + experience_body.strip() + "\n",
+            encoding="utf-8",
+        )
+        written.append(exp_path)
+    return written
+
+
 def update_dashboard():
     """更新知识库首页：概览/状态/大类/小类/待恢复列表。"""
     notes = list(NOTE_DIR.glob("*.md"))
@@ -644,7 +872,7 @@ def update_dashboard():
     # 归档文档标签（一趟读完）
     doc_count = 0
     for sub in sorted(PLANS_DIR.glob("*/")):
-        if sub.name in ("会话索引", "会话断点"):
+        if sub.name in ("会话索引", "会话断点", "可复用经验"):
             continue
         for md in sub.glob("*.md"):
             doc_count += 1
@@ -751,8 +979,10 @@ def main():
         sys.exit(0)
     ctx = extract_session_context(transcript_path)
     status = determine_session_status(ctx)
+    ctx["status"] = status
     os.makedirs(INDEX_DIR, exist_ok=True)
     os.makedirs(NOTE_DIR, exist_ok=True)
+    os.makedirs(EXPERIENCE_DIR, exist_ok=True)
     existing_note = find_note_by_session(NOTE_DIR, session_id)
     old_stem = None
     if lite_mode:
@@ -814,6 +1044,9 @@ def main():
     session_note_path.write_text(note_content, encoding="utf-8")
     print(f"[obsidian-hook] Session checkpoint written: {session_note_path}")
     update_daily_index(INDEX_DIR, session_note_path, session_id, ctx, status)
+    project_notes = update_project_knowledge(ctx, session_note_path)
+    if project_notes:
+        print("[obsidian-hook] Project knowledge updated: " + ", ".join(str(p) for p in project_notes))
     update_dashboard()
     # --force / lite 重命名后，清掉旧文件名对应的每日索引行
     # 但旧名与新名相同时不能清（会删掉刚加的新行）
