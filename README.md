@@ -68,6 +68,52 @@ Register the following hooks in `~/.codex/hooks.json`, replacing the vault path 
 }
 ```
 
+## 交给 Codex 安装 / Ask Codex to Install
+
+可以把下面整段提示词发送给另一端 Codex。它需要终端写入权限，因为会修改该机器的 `~/.codex/`；没有明确 vault 路径时，它应先询问路径，不能猜测或覆盖已有配置。
+
+Send the complete prompt below to another Codex instance. It needs terminal write permission because it modifies that machine's `~/.codex/`. When the vault path is unknown, it must ask first and must not guess or overwrite existing configuration.
+
+```text
+请安装 Codex CheckPoint：
+https://github.com/DELTANACNCORE/Codex-CheckPoint.git
+
+目标是为当前机器启用完整的 Codex + Obsidian 知识库工作流。
+
+1. 询问 Obsidian vault 路径；如果没有明确路径，不要继续。
+2. 克隆仓库到临时工作目录或用户指定目录。
+3. 将仓库 .codex/hooks/*.py 复制到 ~/.codex/hooks/。
+4. 将 checkpoint、search、synthesize 复制到 ~/.codex/skills/。
+5. 确保 ~/.codex/config.toml 的 [features] 包含 hooks = true。
+6. 读取并保留 ~/.codex/hooks.json 中已有的非本项目 hook；注册以下三个 hook：
+   - Stop: python3 ~/.codex/hooks/stop-wrapper.py --vault-root <vault-path>
+   - UserPromptSubmit: python3 ~/.codex/hooks/stop-wrapper.py --vault-root <vault-path>
+   - PreToolUse: python3 ~/.codex/hooks/pretool-wrapper.py --vault-root <vault-path>
+7. 为复制后的 hook 添加可执行权限。
+8. 运行 python3 ~/.codex/hooks/checkpoint.py --vault-root <vault-path> --force 进行验证。
+9. 报告 hooks.json 的实际修改、写入的断点路径和验证结果。不要输出令牌、rollout 内容或私有 vault 内容。
+```
+
+```text
+Install Codex CheckPoint:
+https://github.com/DELTANACNCORE/Codex-CheckPoint.git
+
+Enable the complete Codex and Obsidian knowledge workflow on this machine.
+
+1. Ask for the Obsidian vault path. Do not continue without an explicit path.
+2. Clone the repository into a temporary directory or a user-selected directory.
+3. Copy .codex/hooks/*.py into ~/.codex/hooks/.
+4. Copy checkpoint, search, and synthesize into ~/.codex/skills/.
+5. Ensure [features] in ~/.codex/config.toml contains hooks = true.
+6. Read and preserve unrelated hooks in ~/.codex/hooks.json, then register these hooks:
+   - Stop: python3 ~/.codex/hooks/stop-wrapper.py --vault-root <vault-path>
+   - UserPromptSubmit: python3 ~/.codex/hooks/stop-wrapper.py --vault-root <vault-path>
+   - PreToolUse: python3 ~/.codex/hooks/pretool-wrapper.py --vault-root <vault-path>
+7. Add executable permission to copied hook files.
+8. Verify with python3 ~/.codex/hooks/checkpoint.py --vault-root <vault-path> --force.
+9. Report the actual hooks.json changes, checkpoint path, and verification result. Do not expose tokens, rollout content, or private vault content.
+```
+
 ## 日常使用 / Daily Use
 
 1. 正常使用 Codex，hook 会持续维护断点。 Use Codex normally; hooks maintain checkpoints continuously.
