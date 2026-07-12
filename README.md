@@ -1,4 +1,4 @@
-# Codex CheckPoint / Codex 会话断点
+# Codex CheckPoint V0.5.4 / Codex 会话断点 V0.5.4
 
 为 Codex 与 Obsidian 提供会话断点、持续恢复、项目总结和知识检索。仓库只包含运行时 hook、skills、README、许可证和忽略规则，不包含安装、迁移、打包或解包脚本。
 
@@ -15,7 +15,8 @@ This project is based on [hjm4839-coder/checkpoint](https://github.com/hjm4839-c
 - 自动断点：会话结束时按日期写入 `Codex工作记录/会话断点/YYYY/MM/DD/`。 Automatic checkpoints: sessions are written by date under `Codex工作记录/会话断点/YYYY/MM/DD/`.
 - 持续更新：有效对话达到阈值后，在新用户消息时刷新断点。 Continuous updates: a checkpoint is refreshed when a new user message arrives after the meaningful-round threshold.
 - 恢复注入：新任务可读取相关断点、项目总结和长期经验的短摘要。 Recovery injection: new tasks can receive compact context from relevant checkpoints, project summaries, and reusable experience.
-- 项目总结与长期经验：写入 `项目总结/<项目名>/` 时自动刷新滚动总结和跨项目经验。 Project summaries and reusable experience: writing under `项目总结/<项目名>/` refreshes rolling summaries and cross-project experience.
+- 项目总结：独立项目固定写入 `项目总结/<项目名>.md`，同一会话涉及多个独立项目时合并为一篇并记录 `session_ids`。父项目目录需要用户明确确认归属关系。 Project summaries: independent projects use `项目总结/<项目名>.md`; multiple independent projects in one session are merged into one note with `session_ids`. Parent-project directories require explicit user confirmation.
+- 长期经验：仅在同一项目累计至少 5 个会话且跨度至少 14 天后生成 `长期经验总结/<项目名>.md`，内容包括代码或配置、命令、操作方法、完成路径和避坑记录。 Long-term experience is generated at `长期经验总结/<项目名>.md` only after at least 5 sessions over 14 days, with code or configuration, commands, operating methods, completion paths, and pitfalls.
 - 搜索与合成：保留本地 `search` 与 `synthesize` skills。 Search and synthesis: local `search` and `synthesize` skills remain available.
 - PreTool 提醒：写入项目文档前提示已有相关材料。 PreTool reminder: project-document writes are checked against existing material.
 
@@ -33,6 +34,7 @@ cp .codex/hooks/*.py ~/.codex/hooks/
 cp -R .codex/skills/checkpoint ~/.codex/skills/checkpoint
 cp -R .codex/skills/search ~/.codex/skills/search
 cp -R .codex/skills/synthesize ~/.codex/skills/synthesize
+# 将 .codex/AGENTS.md 的规则合并到 ~/.codex/AGENTS.md，保留已有本地规则。
 chmod +x ~/.codex/hooks/*.py
 ```
 
@@ -89,9 +91,10 @@ https://github.com/DELTANACNCORE/Codex-CheckPoint.git
    - Stop: python3 ~/.codex/hooks/stop-wrapper.py --vault-root <vault-path>
    - UserPromptSubmit: python3 ~/.codex/hooks/stop-wrapper.py --vault-root <vault-path>
    - PreToolUse: python3 ~/.codex/hooks/pretool-wrapper.py --vault-root <vault-path>
-7. 为复制后的 hook 添加可执行权限。
-8. 运行 python3 ~/.codex/hooks/checkpoint.py --vault-root <vault-path> --force 进行验证。
-9. 报告 hooks.json 的实际修改、写入的断点路径和验证结果。不要输出令牌、rollout 内容或私有 vault 内容。
+7. 将仓库 .codex/AGENTS.md 的项目归档规则合并到 ~/.codex/AGENTS.md，保留已有本地规则。
+8. 为复制后的 hook 添加可执行权限。
+9. 运行 python3 ~/.codex/hooks/checkpoint.py --vault-root <vault-path> --force 进行验证。
+10. 报告 hooks.json 的实际修改、写入的断点路径和验证结果。不要输出令牌、rollout 内容或私有 vault 内容。
 ```
 
 ```text
@@ -109,9 +112,10 @@ Enable the complete Codex and Obsidian knowledge workflow on this machine.
    - Stop: python3 ~/.codex/hooks/stop-wrapper.py --vault-root <vault-path>
    - UserPromptSubmit: python3 ~/.codex/hooks/stop-wrapper.py --vault-root <vault-path>
    - PreToolUse: python3 ~/.codex/hooks/pretool-wrapper.py --vault-root <vault-path>
-7. Add executable permission to copied hook files.
-8. Verify with python3 ~/.codex/hooks/checkpoint.py --vault-root <vault-path> --force.
-9. Report the actual hooks.json changes, checkpoint path, and verification result. Do not expose tokens, rollout content, or private vault content.
+7. Merge the project-archiving rules from .codex/AGENTS.md into ~/.codex/AGENTS.md while preserving existing local rules.
+8. Add executable permission to copied hook files.
+9. Verify with python3 ~/.codex/hooks/checkpoint.py --vault-root <vault-path> --force.
+10. Report the actual hooks.json changes, checkpoint path, and verification result. Do not expose tokens, rollout content, or private vault content.
 ```
 
 ## 日常使用 / Daily Use
@@ -120,7 +124,7 @@ Enable the complete Codex and Obsidian knowledge workflow on this machine.
 2. 打开 `知识库首页.md` 或 `Codex工作记录/会话索引/` 回顾最近会话。 Open `知识库首页.md` or `Codex工作记录/会话索引/` to review recent sessions.
 3. 需要立即刷新当前断点时调用 checkpoint skill。 Invoke the checkpoint skill to refresh the current checkpoint immediately.
 4. 需要查找知识时调用 search skill；需要跨会话整理时调用 synthesize skill。 Invoke search to find knowledge and synthesize to consolidate related sessions.
-5. 接手项目时优先读取 `项目总结/<项目名>/项目总结.md`。 When resuming a project, read `项目总结/<项目名>/项目总结.md` first.
+5. 接手项目时优先读取 `项目总结/<项目名>.md`；已确认的父项目才读取 `项目总结/<父项目>/项目总结.md`。 When resuming a project, read `项目总结/<项目名>.md` first; read `项目总结/<父项目>/项目总结.md` only for confirmed parent projects.
 
 ## 目录结构 / Repository Layout
 
@@ -141,12 +145,18 @@ Enable the complete Codex and Obsidian knowledge workflow on this machine.
 ```text
 vault/
 ├── 知识库首页.md
-├── 长期经验总结/
-├── 项目总结/<项目名>/
+├── 长期经验总结/<项目名>.md
+├── 项目总结/<项目名>.md
 └── Codex工作记录/
     ├── 会话索引/YYYY-MM-DD.md
     └── 会话断点/YYYY/MM/DD/<主题>.md
 ```
+
+## 项目归档规则 / Project Archiving Rules
+
+独立项目只保留一份 `项目总结/<项目名>.md`。用户提到“归档到同一项目”或“放到父项目”时，Codex 必须询问该项目是否归属于该父项目；得到明确确认后，才可创建 `项目总结/<父项目>/`，并在其 `项目总结.md` 标记 `group_confirmed: true`。没有归属关系的多个项目在同一次会话中合并为一篇项目总结，并将所有会话标识写入 `session_ids`。
+
+An independent project keeps one `项目总结/<项目名>.md`. When a user asks to archive work under the same or a parent project, Codex must ask whether the project belongs to that parent. Only an explicit confirmation permits `项目总结/<父项目>/`, whose `项目总结.md` must contain `group_confirmed: true`. Unrelated projects from one session are merged into one project summary with all session identifiers in `session_ids`.
 
 ## 许可证 / License
 

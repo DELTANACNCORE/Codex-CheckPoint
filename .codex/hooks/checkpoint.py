@@ -41,10 +41,12 @@ INDEX_DIR = PLANS_DIR / "会话索引"       # 每日索引 YYYY-MM-DD.md
 NOTE_DIR = PLANS_DIR / "会话断点"         # 单条会话断点 <主题>.md（与会话索引分开）
 EXPERIENCE_DIR = PLANS_DIR / "可复用经验"  # 跨项目复用的经验摘要
 PROJECTS_DIR = PLANS_DIR
-PROJECT_SUMMARY_NAME = "项目总结.md"      # 每个项目目录内的滚动项目摘要
+PROJECT_SUMMARY_NAME = "项目总结.md"      # 仅已确认父项目目录使用的汇总文件
 PROJECT_EXPERIENCE_SUFFIX = "长期经验总结.md"
 PROJECT_SUMMARY_MAX_CHARS = 18000
 AUTO_CHECKPOINT_MIN_ROUNDS = 5
+LONG_PROJECT_MIN_SESSIONS = 5
+LONG_PROJECT_MIN_DAYS = 14
 VAULT_TIMEZONE = ZoneInfo("Asia/Shanghai")
 DEBUG_LOG_PATH = Path(
     os.environ.get(
@@ -199,21 +201,27 @@ def _add_written_file(result: dict, file_path: str, plans_dir: Path = None, plan
     try:
         path = Path(abs_path)
         rel = path.relative_to(project_root)
-        if len(rel.parts) >= 2 and path.suffix.lower() == ".md":
+        if len(rel.parts) == 1 and path.suffix.lower() == ".md" and path.stem != "首页":
             result["written_files"].add(abs_path)
-            result["projects"].add(rel.parent.as_posix())
+            result["projects"].add(path.stem)
+            return
+        if len(rel.parts) >= 2 and path.suffix.lower() == ".md":
+            parent = rel.parts[0]
+            parent_summary = project_root / parent / PROJECT_SUMMARY_NAME
+            if _is_confirmed_project_group(parent_summary):
+                result["written_files"].add(abs_path)
+                result["projects"].add(parent)
             return
     except Exception:
         pass
 
     # Vault 根目录下按“分类/项目/文档”组织的项目由用户或其他会话维护。
-    # 它们应进入索引和检索，但不能由 Codex方案 的自动摘要逻辑覆盖。
+    # 它们应进入索引和检索，但不能由自动摘要逻辑覆盖。
     try:
         path = Path(abs_path)
         rel = path.relative_to(VAULT_ROOT)
         if (
             len(rel.parts) >= 3
-            # Codex 自动生成的目录不应视为用户维护的外部项目。
             and "Codex方案" not in rel.parts
             and "Codex工作记录" not in rel.parts
             and "项目总结" not in rel.parts
@@ -225,6 +233,23 @@ def _add_written_file(result: dict, file_path: str, plans_dir: Path = None, plan
             result["external_projects"].add("/".join(rel.parts[:2]))
     except Exception:
         pass
+
+
+def _is_confirmed_project_group(summary_path: Path) -> bool:
+    """项目目录只有在用户确认归属后才可作为父级项目。"""
+    try:
+        text = summary_path.read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError):
+        return False
+    return bool(re.search(r"^group_confirmed:\s*true$", text, re.MULTILINE))
+
+
+def _project_summary_path(project: str) -> Path:
+    return PROJECTS_DIR / f"{sanitize_filename(project)}.md"
+
+
+def _experience_path(project: str) -> Path:
+    return EXPERIENCE_DIR / f"{sanitize_filename(project)}.md"
 
 
 def _extract_paths_from_apply_patch(patch_text: str) -> list:
@@ -946,7 +971,7 @@ def generate_session_note(session_id: str, ctx: dict, status: str, related: list
     ]
     if project_refs:
         continuation_lines.append(
-            "- 优先读取涉及项目的 `项目总结.md`，再根据实际产出和下方结论继续。"
+            "- 优先读取涉及项目的单文件项目总结，再根据实际产出和下方结论继续。"
         )
     else:
         continuation_lines.append("- 先依据本断点的主要结论和实际产出继续，避免重新加载完整 transcript。")
@@ -1236,25 +1261,23 @@ def _read_project_docs(project: str) -> list:
 
 
 def _project_doc_paths(project: str) -> list:
-    """返回某个项目目录下可作为总结材料的归档文档。"""
-    project_dir = PROJECTS_DIR / project
-    if not project_dir.is_dir():
-        return []
-    docs = []
-    for p in sorted(project_dir.glob("*.md")):
-        if p.name == PROJECT_SUMMARY_NAME:
-            continue
-        if p.name.endswith(PROJECT_EXPERIENCE_SUFFIX):
-            continue
-        docs.append(p)
-    return docs
+    """独立项目使用单个摘要文件；确认的父项目才使用目录摘要。"""
+    group_summary = PROJECTS_DIR / project / PROJECT_SUMMARY_NAME
+    if _is_confirmed_project_group(group_summary):
+        return [group_summary]
+    summary = _project_summary_path(project)
+    return [summary] if summary.is_file() else []
 
 
 def _collect_project_material(project: str, ctx: dict, session_note_path: Path) -> str:
     """收集项目归档、旧总结、当前断点，限制体积后交给 LLM。"""
     project_dir = PROJECTS_DIR / project
     parts = [f"项目名：{project}"]
-    summary_path = project_dir / PROJECT_SUMMARY_NAME
+    summary_path = (
+        project_dir / PROJECT_SUMMARY_NAME
+        if _is_confirmed_project_group(project_dir / PROJECT_SUMMARY_NAME)
+        else _project_summary_path(project)
+    )
     if summary_path.exists():
         parts.append("\n## 旧项目总结（用于增量更新）\n" + _read_text_limited(summary_path, 5000))
 
@@ -1265,8 +1288,7 @@ def _collect_project_material(project: str, ctx: dict, session_note_path: Path) 
     for f in sorted(ctx.get("written_files", [])):
         try:
             p = Path(f)
-            rel = p.relative_to(project_dir)
-            if len(rel.parts) >= 1:
+            if p == _project_summary_path(project) or p.parent == project_dir:
                 written_in_project.append(p)
         except Exception:
             pass
@@ -1288,7 +1310,7 @@ def _collect_project_material(project: str, ctx: dict, session_note_path: Path) 
     return material
 
 
-def _frontmatter(title_tags: list, project: str, kind: str) -> str:
+def _frontmatter(title_tags: list, project: str, kind: str, session_ids: list[str] = None, **extra) -> str:
     today = vault_now().strftime("%Y-%m-%d")
     tags = [PLAN_TAG, "知识库/自动总结", kind] + [t for t in title_tags if t]
     # 去重但保持顺序
@@ -1296,12 +1318,14 @@ def _frontmatter(title_tags: list, project: str, kind: str) -> str:
     for t in tags:
         if t not in unique_tags:
             unique_tags.append(t)
+    extra_lines = "".join(f"{key}: {json.dumps(value, ensure_ascii=False)}\n" for key, value in extra.items())
     return f"""---
 date: {today}
 project: {project}
+session_ids: {json.dumps(sorted(set(session_ids or [])), ensure_ascii=False)}
 tags: {json.dumps(unique_tags, ensure_ascii=False)}
 aliases: {json.dumps([project, "项目总结", "可复用经验", "经验摘要"], ensure_ascii=False)}
----
+{extra_lines}---
 """
 
 
@@ -1345,7 +1369,9 @@ def _fallback_project_summary(project: str, ctx: dict, session_note_path: Path) 
                 if cleaned:
                     target.append(f"- [[{doc['path'].stem}]]：{_shorten_line(cleaned)}")
 
-    positioning = _dedupe_items(positioning, 4) or [f"- 项目目标是把原仓库的 checkpoint 机制迁到 {PRODUCT_LABEL}，并保持 Obsidian 断点、项目总结和经验沉淀链路可用。"]
+    positioning = _dedupe_items(positioning, 4) or [
+        f"- 本次项目目标：{_shorten_line((ctx.get('user_prompts') or ['未提取到'])[0], 180)}"
+    ]
     status_items = _dedupe_items(status_items, 5)
     if not status_items:
         status_items = [
@@ -1356,19 +1382,13 @@ def _fallback_project_summary(project: str, ctx: dict, session_note_path: Path) 
         status_items.insert(0, f"- 最近断点：{session_link}")
         status_items = _dedupe_items(status_items, 6)
 
+    assistant_conclusion = _short_resume_text(ctx.get("latest_assistant_update", ""), 500)
     decisions = _dedupe_items(decisions, 5) or [
-        f"- 断点写入目录、标签和首页文件名已经切到 {PRODUCT_LABEL} 口径。",
-        f"- 核心链路继续复用 `checkpoint.py`，并补齐 {PRODUCT_LABEL} transcript 解析与 hook 适配。",
+        f"- 本轮结论：{assistant_conclusion}" if assistant_conclusion else "- 待补充：当前断点未提取到可复核的关键结论。"
     ]
-    verified = _dedupe_items(verified, 6) or [
-        f"- 当前会话已经能触发断点写入，并能刷新项目级文档。",
-    ]
-    runtime_notes = _dedupe_items(runtime_notes, 5) or [
-        f"- 优先复用已有项目文档、更新日志和断点，避免重新恢复完整 transcript。",
-    ]
-    experience = _dedupe_items(experience, 5) or [
-        f"- 验证时先拆分 hook、wrapper、trust、手动 checkpoint 几层，再看整条链路。",
-    ]
+    verified = _dedupe_items(verified, 6) or ["- 待补充：当前材料没有独立的验证证据。"]
+    runtime_notes = _dedupe_items(runtime_notes, 5) or ["- 待补充：当前材料没有明确的部署或运行要点。"]
+    experience = _dedupe_items(experience, 5) or ["- 待补充：当前材料尚不足以提炼项目经验。"]
     return f"""# {project} 项目总结
 
 ## 项目定位
@@ -1419,6 +1439,8 @@ def _fallback_experience(project: str, ctx: dict, session_note_path: Path) -> st
     workflow = []
     acceptance = []
     keywords = []
+    code_examples = []
+    commands = []
 
     for doc in docs:
         for section_name, target in (
@@ -1442,30 +1464,33 @@ def _fallback_experience(project: str, ctx: dict, session_note_path: Path) -> st
                 if cleaned:
                     target.append(f"- {_shorten_line(cleaned)}")
         keywords.extend(re.findall(r"[A-Za-z][A-Za-z0-9_-]*|[\u4e00-\u9fff]{2,}", doc["title"]))
+        for block in re.findall(r"```[^\n]*\n([\s\S]*?)```", doc["text"]):
+            compact = block.strip()
+            if compact:
+                code_examples.append(compact[:800])
+        for command in re.findall(r"`([^`\n]{3,180})`", doc["text"]):
+            if re.search(r"(?:python|git|docker|curl|npm|pip|codex|\.py|--)", command, re.IGNORECASE):
+                commands.append(command)
 
-    reusable = _dedupe_items(reusable, 5) or [
-        "- 阶段结束就把方案、验证记录和更新日志写进项目目录，让后续总结不必重新扫完整 transcript。",
-        f"- 迁移到 {PRODUCT_LABEL} 时，优先复用现有断点逻辑，再补 transcript 解析、hook 适配和知识库口径切换。",
-    ]
-    pitfalls = _dedupe_items(pitfalls, 5) or [
-        "- 不要把 trust、hook、wrapper、脚本逻辑混在一起排查，否则很容易误判故障层级。",
-        "- 不要让 UI 注入块、调试输出和测试残留直接进入断点和知识合成结果。",
-    ]
-    workflow = _dedupe_items(workflow, 5) or [
-        "- 先验证脚本能否独立运行，再验证 hook 输入格式，最后验证真实信任模式和项目级自动沉淀。",
-        "- 关键修补完成后，立即回写真实知识库，检查断点、项目总结、经验摘要和搜索结果是否同步变好。",
-    ]
-    acceptance = _dedupe_items(acceptance, 5) or [
-        "- 自动断点、手动 checkpoint、项目总结、可复用经验、搜索和知识合成都需要至少一次真实回写或真实查询验证。",
-        "- 打包解包必须验证 `Codex工作记录/`、`项目总结/`、`长期经验总结/`、`知识库首页.md` 和 `~/.codex/sessions/` 是否完整恢复。",
-    ]
+    reusable = _dedupe_items(reusable, 5) or ["- 待补充：现有材料没有可验证的长期经验结论。"]
+    pitfalls = _dedupe_items(pitfalls, 5) or ["- 待补充：现有材料没有可复用的风险记录。"]
+    workflow = _dedupe_items(workflow, 5) or ["- 待补充：现有材料没有完整的完成步骤。"]
+    acceptance = _dedupe_items(acceptance, 5) or ["- 待补充：现有材料没有可复核的验收标准。"]
     keyword_list = _dedupe_items([f"`{k}`" for k in keywords if len(k) >= 2], 12) or [
         "`checkpoint`", "`Codex`", "`Obsidian`", "`hook`", "`synthesize`", "`search`"
     ]
 
     return f"""# {project} 长期经验总结
 
-## 长期经验总结
+## 经典代码与配置
+
+{chr(10).join(f"```text\n{item}\n```" for item in _dedupe_items(code_examples, 3)) if code_examples else "待补充：项目材料未包含可复用的代码或配置片段。"}
+
+## 常用指令
+
+{chr(10).join(f"- `{item}`" for item in _dedupe_items(commands, 10)) if commands else "待补充：项目材料未包含可复用的命令。"}
+
+## 长期经验
 
 {chr(10).join(reusable)}
 
@@ -1473,12 +1498,13 @@ def _fallback_experience(project: str, ctx: dict, session_note_path: Path) -> st
 
 {chr(10).join(pitfalls)}
 
-## 下次同类项目流程
+## 操作方法
 
-1. 先看 `项目总结.md` 和最近更新日志，确认当前链路和剩余缺口。
-2. 先拆脚本、hook、trust、项目沉淀四层做验证，再回到整体验证。
-3. 每修一层就回写真实知识库，检查断点、搜索、合成结果是否同步改善。
-4. 阶段结束后刷新项目总结和长期经验总结，避免下一轮继续吃长上下文成本。
+{chr(10).join(workflow)}
+
+## 完成路径
+
+{chr(10).join(f"{index}. {item.lstrip('- ').strip()}" for index, item in enumerate(workflow, 1))}
 
 ## 验收检查清单
 
@@ -1504,32 +1530,64 @@ def synthesize_reusable_experience(project: str, ctx: dict, session_note_path: P
 
 
 def update_project_knowledge(ctx: dict, session_note_path: Path):
-    """为本次涉及的项目刷新滚动总结，并沉淀长期可复用经验。"""
+    """独立项目写单文件，长期经验只对满足时长和会话数的项目生成。"""
     projects = sorted(ctx.get("projects", []))
     if not projects:
         return []
-    os.makedirs(EXPERIENCE_DIR, exist_ok=True)
-    written = []
-    for project in projects:
-        project_dir = PROJECTS_DIR / project
-        if not project_dir.is_dir():
-            continue
-        ctx_with_status = dict(ctx)
-        ctx_with_status["status"] = ctx.get("status", "completed")
+    os.makedirs(PROJECTS_DIR, exist_ok=True)
+    current_session_ids = read_frontmatter_list(session_note_path, "session_ids")
+    if not current_session_ids:
+        text = _read_text_limited(session_note_path, 1000)
+        match = re.search(r'^session_id:\s*"([^"]+)"', text, re.MULTILINE)
+        current_session_ids = [match.group(1)] if match else []
 
-        summary_body = synthesize_project_summary(project, ctx_with_status, session_note_path)
-        summary_path = project_dir / PROJECT_SUMMARY_NAME
-        summary_path.write_text(
-            _frontmatter(["项目总结"], project, "项目总结") + "\n" + summary_body.strip() + "\n",
-            encoding="utf-8",
+    # 同一会话命中多个独立项目时使用同一摘要，避免再次制造目录和重复文档。
+    if len(projects) > 1:
+        project = "、".join(projects)
+        summary_path = next(
+            (path for path in PROJECTS_DIR.glob("*.md")
+             if set(read_frontmatter_list(path, "merged_projects")) == set(projects)),
+            PROJECTS_DIR / f"{sanitize_filename(project)}.md",
         )
-        written.append(summary_path)
+    else:
+        project = projects[0]
+        group_summary = PROJECTS_DIR / project / PROJECT_SUMMARY_NAME
+        summary_path = group_summary if _is_confirmed_project_group(group_summary) else _project_summary_path(project)
 
+    existing_sessions = read_frontmatter_list(summary_path, "session_ids")
+    session_ids = sorted(set(existing_sessions + current_session_ids))
+    ctx_with_status = dict(ctx)
+    ctx_with_status["status"] = ctx.get("status", "completed")
+    summary_body = synthesize_project_summary(project, ctx_with_status, session_note_path)
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    extra = {"merged_projects": projects} if len(projects) > 1 else {}
+    if summary_path.name == PROJECT_SUMMARY_NAME and _is_confirmed_project_group(summary_path):
+        extra["group_confirmed"] = True
+        extra["children"] = read_frontmatter_list(summary_path, "children")
+    summary_path.write_text(
+        _frontmatter(["项目总结"], project, "项目总结", session_ids, **extra)
+        + "\n" + summary_body.strip() + "\n",
+        encoding="utf-8",
+    )
+    written = [summary_path]
+
+    dates = []
+    for note in NOTE_DIR.glob("*.md"):
+        note_text = _read_text_limited(note, 2000)
+        note_id = re.search(r'^session_id:\s*"([^"]+)"', note_text, re.MULTILINE)
+        note_date = re.search(r'^date:\s*"?([^\n"]+)', note_text, re.MULTILINE)
+        if note_id and note_date and note_id.group(1) in session_ids:
+            try:
+                dates.append(datetime.strptime(note_date.group(1), "%Y-%m-%d").date())
+            except ValueError:
+                pass
+    if len(session_ids) >= LONG_PROJECT_MIN_SESSIONS and dates and (max(dates) - min(dates)).days >= LONG_PROJECT_MIN_DAYS:
+        os.makedirs(EXPERIENCE_DIR, exist_ok=True)
+        exp_path = _experience_path(project)
         experience_body = synthesize_reusable_experience(project, ctx_with_status, session_note_path)
-        exp_name = f"{sanitize_filename(project)}-{PROJECT_EXPERIENCE_SUFFIX}"
-        exp_path = EXPERIENCE_DIR / exp_name
         exp_path.write_text(
-            _frontmatter(["长期经验总结"], project, "长期经验总结") + "\n" + experience_body.strip() + "\n",
+            _frontmatter(["长期经验总结"], project, "长期经验总结", session_ids)
+            + "\n" + experience_body.strip() + "\n",
             encoding="utf-8",
         )
         written.append(exp_path)
@@ -1545,45 +1603,14 @@ def _vault_link(path: Path, label: str) -> str:
 
 
 def update_navigation_notes():
-    """为首页入口提供真实可打开的 Markdown 导航页。"""
-    experience_index = EXPERIENCE_DIR / "首页.md"
-    experience_links = []
-    if EXPERIENCE_DIR.is_dir():
-        for path in sorted(EXPERIENCE_DIR.glob("*.md")):
-            if path == experience_index:
-                continue
-            title = _extract_h1(_read_text_limited(path, 1200), path.stem)
-            experience_links.append(f"- {_vault_link(path, title)}")
-    experience_index.write_text(
-        "# 长期经验总结\n\n"
-        "> 跨项目可复用的流程、边界和验收经验。\n\n"
-        "## 可用总结\n\n"
-        + ("\n".join(experience_links) if experience_links else "暂无长期经验总结")
-        + "\n",
-        encoding="utf-8",
-    )
-
-    project_index = PROJECTS_DIR / "首页.md"
-    project_links = []
-    if PROJECTS_DIR.is_dir():
-        for summary in sorted(PROJECTS_DIR.rglob(PROJECT_SUMMARY_NAME)):
-            title = _extract_h1(_read_text_limited(summary, 1200), summary.parent.name)
-            project_links.append(f"- {_vault_link(summary, title)}")
-    project_index.write_text(
-        "# 项目总结\n\n"
-        "> 各项目的当前状态、已验证结论与恢复入口。\n\n"
-        "## 项目列表\n\n"
-        + ("\n".join(project_links) if project_links else "暂无项目总结")
-        + "\n",
-        encoding="utf-8",
-    )
+    """首页直接列出项目与经验，不再生成额外导航笔记。"""
+    return
 
 
 def update_dashboard():
     """更新知识库首页：概览/状态/大类/小类/待恢复列表。"""
     os.makedirs(EXPERIENCE_DIR, exist_ok=True)
     os.makedirs(PROJECTS_DIR, exist_ok=True)
-    update_navigation_notes()
     notes = list(NOTE_DIR.glob("*.md"))
     total = len(notes)
     status_counts = {"completed": 0, "interrupted": 0, "incomplete_archive": 0, "archived": 0}
@@ -1627,37 +1654,24 @@ def update_dashboard():
             h1 = re.search(r'^# (.+)', text, re.MULTILINE)
             unarchived_entries.append(f"- [[{note_rel}|{h1.group(1) if h1 else n.stem}]] · {d.group(1) if d else '?'}")
 
-    # 项目材料统一位于“项目总结/”，项目入口由各目录中的项目总结确定。
+    # 独立项目使用顶层单文件；目录只代表经用户确认的父项目拓扑。
     doc_count = 0
     if PROJECTS_DIR.is_dir():
-        for summary in sorted(PROJECTS_DIR.rglob(PROJECT_SUMMARY_NAME)):
-            project_dir = summary.parent
-            project_docs = sorted(project_dir.glob("*.md"))
-            if not project_docs:
+        summaries = sorted(path for path in PROJECTS_DIR.glob("*.md") if path.name != "首页.md")
+        for summary in summaries:
+            title = _extract_h1(_read_text_limited(summary, 1200), summary.stem)
+            project_entries.append(f"- {_vault_link(summary, title)}")
+            doc_count += 1
+        for group_summary in sorted(PROJECTS_DIR.glob(f"*/{PROJECT_SUMMARY_NAME}")):
+            if not _is_confirmed_project_group(group_summary):
                 continue
-            project_rel = project_dir.relative_to(PROJECTS_DIR).as_posix()
-            summary_rel = summary.relative_to(VAULT_ROOT).with_suffix("")
-            overview = next((doc for doc in project_docs if doc.name != PROJECT_SUMMARY_NAME), None)
-            overview_link = (
-                f" · [[{overview.relative_to(VAULT_ROOT).with_suffix('')}|项目材料]]"
-                if overview else ""
-            )
-            project_entries.append(
-                f"- [[{summary_rel}|{project_rel}]]{overview_link} · {len(project_docs)} 篇项目文档"
-            )
-            for md in project_docs:
+            title = _extract_h1(_read_text_limited(group_summary, 1200), group_summary.parent.name)
+            project_entries.append(f"- {_vault_link(group_summary, title)}")
+            children = [path for path in sorted(group_summary.parent.glob("*.md")) if path != group_summary]
+            for child in children:
+                project_entries.append(f"  - {_vault_link(child, _extract_h1(_read_text_limited(child, 800), child.stem))}")
                 doc_count += 1
-                try:
-                    text = md.read_text(encoding="utf-8")
-                except Exception:
-                    continue
-                tm = re.search(r'^tags:\s*(\[.*\])', text, re.MULTILINE)
-                if tm:
-                    try:
-                        for t in json.loads(tm.group(1)):
-                            tag_counts[t] = tag_counts.get(t, 0) + 1
-                    except Exception:
-                        pass
+            doc_count += 1
 
     completed = status_counts["completed"]
     interrupted = status_counts["interrupted"]
@@ -1719,8 +1733,8 @@ def update_dashboard():
 
 ## 入口
 
-- [[长期经验总结/首页|长期经验总结]]
-- [[项目总结/首页|项目总结]]
+- [[长期经验总结]]
+- [[项目总结]]
 - {work_entry}
 - [[Codex协同Obsidian工作流skill更新日志]]
 

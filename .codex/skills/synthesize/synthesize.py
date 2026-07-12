@@ -173,6 +173,8 @@ def build_record(path: Path, text: str) -> dict:
         "category": extract_frontmatter_list(text, "category"),
         "keywords": extract_frontmatter_list(text, "keywords"),
         "projects": extract_frontmatter_list(text, "projects"),
+        "session_ids": extract_frontmatter_list(text, "session_ids"),
+        "session_id": extract_frontmatter_value(text, "session_id"),
         "status": status_match.group(1) if status_match else "",
         "date": date_text,
         "kind": kind,
@@ -192,9 +194,17 @@ def note_records(note_dir: Path) -> list[dict]:
     return records
 
 
-def project_records(project_dir: Path, target_title: str) -> list[dict]:
+def project_records(projects_dir: Path, project: str, target_title: str) -> list[dict]:
     records = []
-    if not project_dir.is_dir():
+    direct = projects_dir / f"{safe_filename(project)}.md"
+    if direct.is_file():
+        text = read_text(direct)
+        if text:
+            records.append(build_record(direct, text))
+        return records
+    project_dir = projects_dir / project
+    group_summary = project_dir / "项目总结.md"
+    if not (project_dir.is_dir() and re.search(r"^group_confirmed:\s*true$", read_text(group_summary), re.MULTILINE)):
         return records
     for path in sorted(project_dir.glob("*.md")):
         # 项目总结与自动合成都是派生结果，继续作为输入会形成递归引用。
@@ -290,7 +300,7 @@ def select_records(records: list[dict], args, plans_dir: Path) -> tuple[str, lis
     if args.project:
         project = args.project.strip()
         title = args.title or f"{project} 知识整理"
-        project_docs = project_records(plans_dir / project, title)
+        project_docs = project_records(plans_dir, project, title)
         target_tokens = extract_terms(project)
         for doc in project_docs:
             target_tokens.extend(extract_terms(doc["title"]))
@@ -552,13 +562,21 @@ def main():
         sys.exit(1)
 
     title = args.title or (f"{project} 知识整理" if project else "Codex 知识整理")
-    target_dir = projects_dir / project
-    target_dir.mkdir(parents=True, exist_ok=True)
-    target_path = target_dir / f"{safe_filename(title)}.md"
+    # 默认只更新一个独立项目摘要；目录仅服务于已确认的父项目。
+    target_path = projects_dir / f"{safe_filename(project)}.md"
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    existing_session_ids = extract_frontmatter_list(read_text(target_path), "session_ids")
+    selected_session_ids = []
+    for record in selected:
+        if record["kind"] == "session" and record.get("session_id"):
+            selected_session_ids.append(record["session_id"])
+        selected_session_ids.extend(record.get("session_ids", []))
+    session_ids = dedupe_texts(existing_session_ids + selected_session_ids)
     frontmatter = (
         "---\n"
         f"date: {datetime.now(VAULT_TIMEZONE).strftime('%Y-%m-%d')}\n"
         f"project: {project}\n"
+        f"session_ids: {json.dumps(session_ids, ensure_ascii=False)}\n"
         f"tags: {json.dumps(tags, ensure_ascii=False)}\n"
         "---\n\n"
     )

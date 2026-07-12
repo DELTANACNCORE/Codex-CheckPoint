@@ -33,7 +33,7 @@ python3 ~/.codex/skills/synthesize/synthesize.py --vault-root "$OBSIDIAN_VAULT" 
 ## 输出 / Output
 
 - 读取相关断点。 Reads related checkpoints.
-- 在 `项目总结/<项目>/` 下生成知识文档。 Creates a knowledge document under `项目总结/<项目>/`.
+- 更新 `项目总结/<项目名>.md`。只有用户已确认父子归属时才写入父项目目录。 Updates `项目总结/<项目名>.md`. A parent-project directory is used only after the user confirms the relationship.
 - 返回文档路径、覆盖会话数和主要结论。 Returns the document path, covered-session count, and main conclusions.
 
 ## 已验证范围 / Verified Scope

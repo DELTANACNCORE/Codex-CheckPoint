@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+import re
 from pathlib import Path
 
 if "--vault-root" in sys.argv:
@@ -99,6 +100,24 @@ def main():
         target_dirs.setdefault(path.parent, set()).add(path.name)
 
     reminders = []
+    for path in target_paths:
+        try:
+            relative = path.relative_to(PROJECTS_DIR)
+        except ValueError:
+            continue
+        if len(relative.parts) < 2:
+            continue
+        parent = PROJECTS_DIR / relative.parts[0]
+        parent_summary = parent / "项目总结.md"
+        confirmed = False
+        try:
+            confirmed = bool(re.search(r"^group_confirmed:\s*true$", parent_summary.read_text(encoding="utf-8"), re.MULTILINE))
+        except OSError:
+            pass
+        if not confirmed:
+            reminders.append(
+                f"项目目录“{relative.parts[0]}”尚未确认是父项目。先询问用户：该项目是否归属于“{relative.parts[0]}”？未确认不得创建父项目目录；独立项目应写入 项目总结/<项目名>.md，多项目会话应合并 session_ids。"
+            )
     for parent, current_names in target_dirs.items():
         try:
             existing = [
@@ -107,13 +126,12 @@ def main():
             ]
         except Exception:
             continue
-        if not existing:
-            continue
-        shown = ", ".join(f"[[{os.path.splitext(f)[0]}]]" for f in existing[:5])
-        suffix = " …" if len(existing) > 5 else ""
-        reminders.append(
-            f"注意：'{parent.name}' 目录已有 {len(existing)} 份文档（{shown}{suffix}），请先确认是否已有相关结论可引用，避免重新推导。"
-        )
+        if existing:
+            shown = ", ".join(f"[[{os.path.splitext(f)[0]}]]" for f in existing[:5])
+            suffix = " …" if len(existing) > 5 else ""
+            reminders.append(
+                f"注意：'{parent.name}' 目录已有 {len(existing)} 份文档（{shown}{suffix}），请先确认是否已有相关结论可引用，避免重新推导。"
+            )
 
     if not reminders:
         sys.exit(0)

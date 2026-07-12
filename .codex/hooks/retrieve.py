@@ -217,7 +217,13 @@ def render_note_brief(path: Path) -> tuple[str, list[str]]:
 
 
 def project_summary_path(project: str) -> Path:
-    return PROJECTS_DIR / project / "项目总结.md"
+    direct = PROJECTS_DIR / f"{project}.md"
+    if direct.is_file():
+        return direct
+    grouped = PROJECTS_DIR / project / "项目总结.md"
+    if grouped.is_file() and re.search(r"^group_confirmed:\s*true$", read_text(grouped), re.MULTILINE):
+        return grouped
+    return direct
 
 
 def render_project_brief(projects: list[str]) -> str:
