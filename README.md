@@ -1,81 +1,91 @@
-# Checkpoint
+# Codex CheckPoint / Codex 会话断点
 
-[![CI](https://github.com/DELTANACNCORE/Codex-CheckPoint/actions/workflows/ci.yml/badge.svg)](https://github.com/DELTANACNCORE/Codex-CheckPoint/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+当前 `main` 分支在 Codex 会话结束时自动生成可恢复的 Obsidian 断点，并同步每日索引、知识库首页与涉及项目的简短状态。
 
-为 Codex 保存可恢复的 Obsidian 会话断点，并维护会话索引、项目总结、长期经验和新任务恢复包，减少重新读取完整 rollout 的需求。
-
-An Obsidian checkpoint workflow for Codex. It maintains session indexes, project summaries, reusable experience, and recovery briefs so later tasks can continue without reloading a full rollout.
+The current `main` branch writes a recoverable Obsidian checkpoint when a Codex session ends and refreshes the daily index, vault homepage, and concise status for affected projects.
 
 ## 上游与署名 / Upstream and Attribution
 
-本项目基于 [hjm4839-coder/checkpoint](https://github.com/hjm4839-coder/checkpoint) 的原始实现构建，原始作者为 [hjm4839-coder](https://github.com/hjm4839-coder)。`DELTANACNCORE/Codex-CheckPoint` 在保留原始 MIT 许可证和 Git 提交历史的基础上，完成了仅支持 Codex 的工作流改造。
+本项目基于 [hjm4839-coder/checkpoint](https://github.com/hjm4839-coder/checkpoint) 的原始实现，原始作者为 [hjm4839-coder](https://github.com/hjm4839-coder)。本仓库保留原始 MIT 许可证和 Git 历史，并改造成仅支持 Codex 的精简运行版本。
 
-This project is based on [hjm4839-coder/checkpoint](https://github.com/hjm4839-coder/checkpoint) by [hjm4839-coder](https://github.com/hjm4839-coder). `DELTANACNCORE/Codex-CheckPoint` retains the original MIT license and Git history while adapting the workflow exclusively for Codex.
+This project is based on [hjm4839-coder/checkpoint](https://github.com/hjm4839-coder) by [hjm4839-coder](https://github.com/hjm4839-coder). It retains the original MIT license and Git history while providing a compact Codex-only runtime.
 
-## 当前状态 / Current Status
+## 日常使用 / Daily Use
 
-适用于已启用 hooks 的 Codex 环境。核心断点、索引、检索与知识合成均在本地从 Codex rollout 和已有 Markdown 文档提取，不依赖第三方模型服务。
-
-Designed for Codex environments with hooks enabled. Checkpoints, indexes, retrieval, and knowledge synthesis are derived locally from Codex rollouts and existing Markdown notes without third-party model services.
+1. 正常使用 Codex，Stop hook 会在会话结束时写入断点。 Use Codex normally; the Stop hook writes a checkpoint when the session ends.
+2. 打开 `知识库首页.md` 或 `Codex工作记录/会话索引/` 查看最近会话。 Open `知识库首页.md` or `Codex工作记录/会话索引/` to review recent sessions.
+3. 需要立即更新时调用 checkpoint skill。 Invoke the checkpoint skill when an immediate refresh is needed.
+4. 接手项目时先读取 `项目总结/<项目名>/项目总结.md`，再打开最近断点。 When resuming a project, read `项目总结/<项目名>/项目总结.md` before opening the latest checkpoint.
 
 ## 功能 / Features
 
-- Full 模式通过 Stop、UserPromptSubmit 和 PreToolUse hook 自动维护知识库。Full mode automatically maintains the knowledge base through Stop, UserPromptSubmit, and PreToolUse hooks.
-- Lite 模式保留手动 checkpoint，由调用时提供标题和标签，不启用自动写入。Lite mode keeps checkpointing manual, takes caller-provided titles and tags, and does not enable automatic writes.
-- 五次有效来回对话后生成恢复断点，短会话只写入每日索引。A recovery brief is generated after five meaningful rounds; short sessions are recorded only in the daily index.
-- 项目材料写入 `项目总结/`，跨项目经验写入 `长期经验总结/`。Project material is written to `项目总结/`, while cross-project experience is written to `长期经验总结/`.
-- 新任务优先读取相关长期经验、项目总结和恢复断点。New tasks retrieve relevant experience, project summaries, and recovery briefs first.
+- 自动断点：Stop hook 按年月日写入 `Codex工作记录/会话断点/YYYY/MM/DD/`。 Automatic checkpoints: the Stop hook writes to `Codex工作记录/会话断点/YYYY/MM/DD/`.
+- 线程标题优先：断点优先采用 Codex 线程标题。 Thread-title first: checkpoints prefer the Codex thread title.
+- 每日索引与首页：自动维护每日会话索引和知识库首页。 Daily index and homepage: both are refreshed automatically.
+- 项目状态：会话写入 `项目总结/<项目名>/` 时刷新该项目的简短状态。 Project status: writes under `项目总结/<项目名>/` refresh that project's concise status.
+- 精简运行边界：仓库只包含自动断点、每日索引、首页和项目状态。 Compact runtime boundary: the repository contains only automatic checkpoints, daily indexes, the homepage, and project status.
 
-## 安装 / Installation
+## 配置 / Setup
 
-前提：Codex 已初始化，Python 3 可用，`~/.codex/config.toml` 已启用 `hooks = true`。
+前提：已安装 Codex、Python 3 和 Obsidian vault。将 hook 与 skill 复制到 `~/.codex`，并在 `~/.codex/hooks.json` 注册 Stop hook。
 
-Prerequisites: Codex is initialized, Python 3 is available, and `hooks = true` is enabled in `~/.codex/config.toml`.
+Prerequisites: Codex, Python 3, and an Obsidian vault. Copy the hook and skill into `~/.codex`, then register the Stop hook in `~/.codex/hooks.json`.
 
 ```bash
 git clone https://github.com/DELTANACNCORE/Codex-CheckPoint.git
 cd Codex-CheckPoint
-bash ./install.sh
+mkdir -p ~/.codex/hooks ~/.codex/skills
+cp .codex/hooks/checkpoint.py ~/.codex/hooks/checkpoint.py
+cp -R .codex/skills/checkpoint ~/.codex/skills/checkpoint
+chmod +x ~/.codex/hooks/checkpoint.py
 ```
 
-Lite 模式 / Lite mode:
+在 `~/.codex/hooks.json` 中按以下结构加入 Stop hook，并将 vault 路径替换为你的实际路径。
 
-```bash
-bash ./install.sh --lite
+Add the Stop hook to `~/.codex/hooks.json` with the following structure, replacing the vault path with your actual path.
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.codex/hooks/checkpoint.py --vault-root ~/obsidian/知识库",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
 ```
 
-安装时输入 Obsidian vault 路径，默认路径为 `~/obsidian/知识库`。Full 模式会安装 checkpoint、检索、PreToolUse 与 Stop wrapper；Lite 模式只保留手动 checkpoint 与 PreToolUse。
+Codex 配置还需要在 `~/.codex/config.toml` 的 `[features]` 下启用 `hooks = true`。
 
-Enter the Obsidian vault path during installation. The default is `~/obsidian/知识库`. Full mode installs checkpoint, retrieval, PreToolUse, and Stop wrappers; Lite mode keeps manual checkpointing and PreToolUse only.
+Codex also requires `hooks = true` under `[features]` in `~/.codex/config.toml`.
 
-## 知识库结构 / Vault Layout
+## 目录结构 / Repository Layout
+
+```text
+.codex/
+├── hooks/
+│   └── checkpoint.py
+└── skills/
+    └── checkpoint/
+        └── SKILL.md
+```
 
 ```text
 vault/
 ├── 知识库首页.md
-├── 长期经验总结/
-├── 项目总结/
-├── Codex工作记录/
-│   ├── 会话断点/
-│   └── 会话索引/
-└── Codex协同Obsidian工作流skill更新日志.md
+├── 项目总结/<项目名>/项目总结.md
+└── Codex工作记录/
+    ├── 会话索引/YYYY-MM-DD.md
+    └── 会话断点/YYYY/MM/DD/<session-id>.md
 ```
-
-`按重启事项继续` 会从知识库首页的重启区读取默认恢复断点。手动 checkpoint、搜索和合成通过已安装 skill 调用本地脚本；Codex 桌面端对 slash 直调的稳定支持仍未完成验证。
-
-`按重启事项继续` reads the default recovery brief from the restart section of the vault homepage. Manual checkpointing, search, and synthesis run through installed local skills; stable native slash-command support in Codex Desktop is not yet verified.
-
-## 安全与数据边界 / Security and Data Boundary
-
-不要提交 Obsidian vault、会话 rollout、hook 日志、迁移归档、API 密钥、访问令牌或个人项目文件。`.gitignore` 已覆盖常见运行数据，提交前仍应检查 `git status` 和暂存区。
-
-Do not commit an Obsidian vault, session rollouts, hook logs, migration archives, API keys, access tokens, or personal project files. `.gitignore` covers common runtime data, but always inspect `git status` and the staging area before committing.
-
-漏洞披露见 [SECURITY.md](./SECURITY.md)，贡献约定见 [CONTRIBUTING.md](./CONTRIBUTING.md)。
-
-See [SECURITY.md](./SECURITY.md) for vulnerability reporting and [CONTRIBUTING.md](./CONTRIBUTING.md) for contribution guidance.
 
 ## 许可证 / License
 
-[MIT English](./LICENSE) · [中文说明 / Chinese reference](./LICENSE.zh-CN.md)
+[MIT](./LICENSE)

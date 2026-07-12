@@ -1,5 +1,0 @@
-blank_issues_enabled: true
-contact_links:
-  - name: 安全漏洞 / Security vulnerability
-    url: https://github.com/DELTANACNCORE/Codex-CheckPoint/security/advisories/new
-    about: 仓库启用后请使用私密漏洞报告。 / Use private vulnerability reporting when it is enabled for this repository.
