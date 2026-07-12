@@ -2,6 +2,10 @@
 
 为 Codex 保存可恢复的 Obsidian 会话断点。项目会维护会话索引、项目总结、长期经验和新任务恢复包，减少重新读取完整 rollout 的需求。
 
+## 上游与署名
+
+本项目基于 [hjm4839-coder/checkpoint](https://github.com/hjm4839-coder/checkpoint) 的原始实现构建，原始作者为 [hjm4839-coder](https://github.com/hjm4839-coder)。`DELTANACNCORE/Codex-CheckPoint` 在保留原始 MIT 许可证和 Git 提交历史的基础上，完成了仅支持 Codex 的工作流改造。
+
 ## 功能
 
 - Codex Full 模式通过 Stop 与 UserPromptSubmit hook 自动维护知识库，本地解析 rollout。
@@ -15,8 +19,8 @@
 前提：Codex 已初始化，Python 3 可用，`~/.codex/config.toml` 已启用 `hooks = true`。
 
 ```bash
-git clone https://github.com/hjm4839-coder/checkpoint.git
-cd checkpoint
+git clone https://github.com/DELTANACNCORE/Codex-CheckPoint.git
+cd Codex-CheckPoint
 bash ./install.sh
 ```
 
