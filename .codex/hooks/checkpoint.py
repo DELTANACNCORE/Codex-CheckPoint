@@ -120,6 +120,40 @@ def vault_now() -> datetime:
     return datetime.now(VAULT_TIMEZONE)
 
 
+def _parse_rollout_time(value) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(VAULT_TIMEZONE)
+
+
+def rollout_conversation_started_at(transcript_path: str) -> datetime | None:
+    """优先使用 session_meta 时间，回退到 rollout 中首个带时间戳的事件。"""
+    earliest = None
+    try:
+        with open(transcript_path, "r", encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                timestamp = _parse_rollout_time(entry.get("timestamp"))
+                if timestamp is None:
+                    continue
+                if earliest is None:
+                    earliest = timestamp
+                if entry.get("type") == "session_meta":
+                    return timestamp
+    except OSError:
+        return None
+    return earliest
+
+
 PLANS_DIR = VAULT_ROOT / SPACE_NAME
 PLANS_DIR_STR = str(PLANS_DIR)
 INDEX_DIR = PLANS_DIR / "会话索引"
@@ -469,10 +503,14 @@ def extract_session_context(transcript_path: str) -> dict:
         "verbal_plan_snippets": [], "used_plan_mode": False,
         "assistant_count": 0, "latest_assistant_update": "", "assistant_updates": [],
         "platform": "codex",
+        "conversation_started_at": "",
         "thread_title": _codex_thread_title(_session_id_from_transcript_path(transcript_path)),
     }
     if not transcript_path or not os.path.exists(transcript_path):
         return result
+    conversation_started_at = rollout_conversation_started_at(transcript_path)
+    if conversation_started_at is not None:
+        result["conversation_started_at"] = conversation_started_at.isoformat()
 
     user_messages = []
     assistant_count = 0
@@ -717,16 +755,22 @@ def extract_session_context(transcript_path: str) -> dict:
         elif user_messages:
             result["topic"] = user_messages[0][:200].replace("\n", " ").replace("\r", " ").strip()
         result["user_prompts"] = [m[:200] for m in real_prompts]
-        for text in reversed(all_assistant_parts):
+        # 回执和相邻副本不属于会话事实。保留整段会话中的有效助手结论，
+        # 由后续摘要函数挑选代表性内容，避免只把末尾一段写进断点。
+        assistant_updates = []
+        seen_updates = set()
+        for text in all_assistant_parts:
             update = _strip_noise_blocks(text)
-            if len(update) >= 12:
-                result["latest_assistant_update"] = update[:1600].rstrip()
-                break
-        result["assistant_updates"] = [
-            _strip_noise_blocks(text).strip()
-            for text in all_assistant_parts
-            if len(_strip_noise_blocks(text).strip()) >= 12
-        ][-8:]
+            if len(update) < 6 or _is_checkpoint_receipt(update):
+                continue
+            fingerprint = re.sub(r"\s+", " ", update).strip().lower()
+            if fingerprint in seen_updates:
+                continue
+            seen_updates.add(fingerprint)
+            assistant_updates.append(update)
+        result["assistant_updates"] = assistant_updates
+        if assistant_updates:
+            result["latest_assistant_update"] = assistant_updates[-1][:1600].rstrip()
 
         all_assistant_text = "".join(all_assistant_parts)
         all_text_lower = all_assistant_text.lower()
@@ -865,7 +909,7 @@ def sanitize_filename(name: str) -> str:
 def _note_relative_target(path: Path) -> str:
     """返回分类断点可稳定跳转的 vault 相对目标。"""
     try:
-        return path.relative_to(VAULT_ROOT).with_suffix("").as_posix()
+        return path.resolve().relative_to(VAULT_ROOT).with_suffix("").as_posix()
     except ValueError:
         return path.stem
 
@@ -989,13 +1033,118 @@ def _replace_wikilink_targets(text: str, replacements: dict) -> str:
         if not old_target or old_target == new_target:
             continue
         pattern = re.compile(
-            r"\[\[" + re.escape(old_target) + r"(?P<anchor>#[^|\]]*)?(?P<alias>\|[^\]]+)?\]\]"
+            r"\[\[" + re.escape(old_target)
+            + r"(?P<anchor>#[^|\\\]]*)?(?P<alias>(?:\\)?\|[^\]]+)?\]\]"
         )
         result = pattern.sub(
             lambda match: f"[[{new_target}{match.group('anchor') or ''}{match.group('alias') or ''}]]",
             result,
         )
     return result
+
+
+def _checkpoint_title_key(value: str) -> str:
+    text = re.sub(r"\s+", " ", str(value or "").strip()).lower()
+    text = re.sub(r"^[#>*-]+\s*", "", text)
+    return text.strip(" ，。；;：:!?！？")
+
+
+def _checkpoint_titles_match(left: str, right: str) -> bool:
+    left_key = _checkpoint_title_key(left)
+    right_key = _checkpoint_title_key(right)
+    return bool(left_key and right_key and left_key == right_key)
+
+
+def _is_checkpoint_receipt(text: str) -> bool:
+    """排除 checkpoint、分类和索引写入完成后的执行回执。"""
+    cleaned = re.sub(r"\[[^\]]+\]\([^)]*\)", "", str(text or "").strip())
+    cleaned = re.sub(r"`([^`]+)`", r"\1", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return bool(re.match(
+        r"^(?:\[obsidian-hook\]|"
+        r"(?:本次对话|当前会话)?已写入恢复断点|"
+        r"本次对话已写入|"
+        r"正在生成当前会话断点|"
+        r"全量分类完成|"
+        r"(?:Manual classification complete|Session checkpoint written|Daily index updated))",
+        cleaned,
+        re.IGNORECASE,
+    ))
+
+
+def _is_usable_checkpoint_title(title: str) -> bool:
+    normalized = re.sub(r"\s+", " ", str(title or "").strip())
+    if not 4 <= len(normalized) <= 80:
+        return False
+    if _is_low_signal_topic(normalized) or _is_checkpoint_receipt(normalized):
+        return False
+    if re.match(r"^(?:新标签页|New chat|Untitled|未命名|第[一二三四五六七八九十0-9]+轮)", normalized, re.IGNORECASE):
+        return False
+    return True
+
+
+def _title_matches_user_prompt(title: str, prompts) -> bool:
+    return any(_checkpoint_titles_match(title, prompt) for prompt in prompts or [])
+
+
+def _is_raw_prompt_title(title: str, prompts) -> bool:
+    """长问句和上下文指代语属于机械标题；简洁任务名仍可保留。"""
+    if not _title_matches_user_prompt(title, prompts):
+        return False
+    normalized = re.sub(r"\s+", " ", str(title or "").strip())
+    if len(normalized) <= 24 and not re.search(r"(?:为什么|怎么|如何|是否|能不能|可以吗|吗|？|\?)", normalized):
+        return False
+    return True
+
+
+def _is_context_dependent_title(title: str) -> bool:
+    """筛出依赖上文才能理解的答案句，避免它们替代整个会话标题。"""
+    normalized = re.sub(r"\s+", " ", str(title or "").strip())
+    if re.match(r"^(?:之前|当前|这次|那(?:个|为什么|怎么)|为什么|怎么|如何|服务端返回|原来)", normalized):
+        return True
+    return bool(re.search(r"(?:user quota is not enough|已写入恢复断点|全量分类完成)", normalized, re.IGNORECASE))
+
+
+def _has_descriptive_thread_title(ctx: dict) -> bool:
+    title = str(ctx.get("thread_title", "")).strip()
+    prompts = ctx.get("user_prompts", [])
+    first_prompt = prompts[0] if prompts else ""
+    return _is_usable_checkpoint_title(title) and not _checkpoint_titles_match(title, first_prompt)
+
+
+def _recovery_terms(text: str) -> set[str]:
+    words = set(re.findall(r"[A-Za-z][A-Za-z0-9_-]*", str(text or "").lower()))
+    for segment in re.findall(r"[\u4e00-\u9fff]+", str(text or "")):
+        words.update(segment[index:index + 2] for index in range(max(len(segment) - 1, 0)))
+    return words
+
+
+def _assistant_recovery_candidates(updates, user_prompts=None) -> list[tuple[int, int, str]]:
+    """从完整会话中选出可验证的助手结论，排除进度播报和运行回执。"""
+    candidates = []
+    total = max(len(updates or []), 1)
+    context_terms = _recovery_terms(" ".join(user_prompts or []))
+    for index, raw_text in enumerate(updates or []):
+        text = _short_resume_text(raw_text, 900)
+        if len(text) < 6 or _is_checkpoint_receipt(text):
+            continue
+        lead = re.sub(r"^[\s>*#-]+", "", text).strip()
+        if re.match(r"^(?:我会|现在会|接下来会|正在|随后会|I will(?:\b|$))", lead, re.IGNORECASE):
+            continue
+        score = int(index * 6 / total)
+        if re.search(r"(?:根因|结论|原因|说明|因此|已(?:完成|配置|注册|验证|修复|同步|写入)|已经|当前|成功|失败|无法|限制|问题)", text):
+            score += 18
+        if context_terms:
+            shared_terms = len(_recovery_terms(text) & context_terms)
+            if shared_terms:
+                score += min(shared_terms, 5) * 3
+            else:
+                # 跨项目的历史说明会被错误拼入当前会话时，不能抢占恢复摘要。
+                score -= 18
+        if re.search(r"(?:已发现并复用长期经验|Script completed|Wall time)", text):
+            score -= 30
+        candidates.append((score, index, text))
+    return candidates
 
 
 def _summary_title(summary: str, limit: int = 60) -> str:
@@ -1013,7 +1162,7 @@ def _summary_title(summary: str, limit: int = 60) -> str:
         line = re.sub(r"\[[^\]]+\]\([^)]*\)", "", line)
         line = re.sub(r"`([^`]+)`", r"\1", line)
         line = re.split(r"(?<=[。！？!?])\s*", line)[0].strip(" 。；;：:")
-        if re.match(r"^(?:本次对话已写入|Obsidian 仓库路径已确认|正在生成当前会话断点)", line):
+        if _is_checkpoint_receipt(line) or re.match(r"^Obsidian 仓库路径已确认", line):
             continue
         if re.match(r"^(?:第[一二三四五六七八九十0-9]+题|问题[一二三四五六七八九十0-9]*)[：:]", line):
             continue
@@ -1023,11 +1172,98 @@ def _summary_title(summary: str, limit: int = 60) -> str:
 
 
 def _checkpoint_summary_title(ctx: dict) -> str:
-    """首次断点和手动刷新均以助手结论，而非用户首句作为标题来源。"""
-    summary = _assistant_resume_block(
-        ctx.get("assistant_updates") or [ctx.get("latest_assistant_update", "")]
+    """没有可用会话标题时，以最强的助手结论生成标题。"""
+    candidates = _assistant_recovery_candidates(
+        ctx.get("assistant_updates") or [ctx.get("latest_assistant_update", "")],
+        ctx.get("user_prompts", []),
     )
-    return _summary_title(summary)
+    for _score, _index, text in sorted(candidates, reverse=True):
+        title = _summary_title(text)
+        if _is_usable_checkpoint_title(title):
+            return title
+    return ""
+
+
+def _preferred_checkpoint_title(ctx: dict, synthesized_topic: str = "") -> tuple[str, str]:
+    """标题优先级：用户可见会话标题、助手结论、全局主题推断。"""
+    if _has_descriptive_thread_title(ctx):
+        return str(ctx["thread_title"]).strip(), "thread"
+    summary_title = _checkpoint_summary_title(ctx)
+    if _is_usable_checkpoint_title(summary_title):
+        return summary_title, "assistant"
+    if _is_usable_checkpoint_title(synthesized_topic):
+        return synthesized_topic.strip(), "inferred"
+    fallback = str(ctx.get("topic", "")).strip()
+    return (fallback or "未命名"), "inferred"
+
+
+def _should_refresh_checkpoint_title(
+    existing_title: str,
+    existing_text: str,
+    ctx: dict,
+    refresh_title: bool,
+    keep_title: bool,
+) -> bool:
+    if keep_title or not refresh_title:
+        return False
+    baseline = _frontmatter_string(existing_text, "title_baseline")
+    source = _frontmatter_string(existing_text, "title_source")
+    # H1 与记录的自动标题不同，说明用户在 Obsidian 中改过标题。
+    if baseline and not _checkpoint_titles_match(existing_title, baseline):
+        return False
+    # 自动标题同样保持稳定；手动 checkpoint 只处理明显错误的标题。
+    requires_repair = (
+        not _is_usable_checkpoint_title(existing_title)
+        or _is_checkpoint_receipt(existing_title)
+        or _is_raw_prompt_title(existing_title, ctx.get("user_prompts", []))
+        or _is_context_dependent_title(existing_title)
+    )
+    if source in {"thread", "assistant", "inferred", "preserved", "manual"}:
+        return requires_repair
+    # 旧版没有来源字段时，也只修复回执、问句和依赖上下文的答案句。
+    return requires_repair
+
+
+def _renamed_checkpoint_path(note_path: Path, title: str, session_id: str) -> Path:
+    filename = sanitize_filename(title)
+    candidate = note_path.parent / f"{filename}.md"
+    if candidate.resolve() == note_path.resolve() or not candidate.exists():
+        return candidate
+    suffix = sanitize_filename(session_id[:8] or "session")
+    candidate = note_path.parent / f"{filename}-{suffix}.md"
+    sequence = 2
+    while candidate.exists() and candidate.resolve() != note_path.resolve():
+        candidate = note_path.parent / f"{filename}-{suffix}-{sequence}.md"
+        sequence += 1
+    return candidate
+
+
+def _repair_checkpoint_links(replacements: dict) -> None:
+    """断点改名或分类移动后同步 vault 内的路径型链接和默认恢复入口。"""
+    if not replacements:
+        return
+    for markdown_path in VAULT_ROOT.rglob("*.md"):
+        try:
+            text = markdown_path.read_text(encoding="utf-8")
+        except (FileNotFoundError, OSError):
+            continue
+        rewritten = _replace_wikilink_targets(text, replacements)
+        for old_target, new_target in replacements.items():
+            old_note = f'"default_note": "{old_target}.md"'
+            new_note = f'"default_note": "{new_target}.md"'
+            rewritten = rewritten.replace(old_note, new_note)
+        if rewritten != text:
+            markdown_path.write_text(rewritten, encoding="utf-8")
+
+
+def _rename_checkpoint_note(note_path: Path, title: str, session_id: str) -> Path:
+    target_path = _renamed_checkpoint_path(note_path, title, session_id)
+    if target_path.resolve() == note_path.resolve():
+        return note_path
+    old_target = _note_relative_target(note_path)
+    note_path.rename(target_path)
+    _repair_checkpoint_links({old_target: _note_relative_target(target_path)})
+    return target_path
 
 
 def find_note_by_session(index_dir: Path, session_id: str):
@@ -1079,45 +1315,71 @@ def _short_resume_text(text: str, limit: int = 1500) -> str:
             continue
         lines.append(line)
     cleaned = "\n".join(lines).strip()
+    # 代码块被移除后，不能留下“命令如下：”这类没有后文的半句。
+    cleaned = re.sub(
+        r"(?:；|。)\s*(?:命令行(?:对应)?操作是|具体命令如下|执行命令如下)[：:]\s*(?=(?:当前|由于|因此|但|$))",
+        "。",
+        cleaned,
+    )
     if len(cleaned) <= limit:
         return cleaned
     return cleaned[: limit - 1].rstrip() + "…"
 
 
-def _assistant_resume_block(updates) -> str:
-    """从助手回复中选择最适合下一轮接手的结论，而非回放聊天记录。"""
-    candidates = []
-    for index, raw_text in enumerate(updates or []):
-        text = _short_resume_text(raw_text)
-        if len(text) < 12:
-            continue
-        if re.match(r"^(?:本次对话已写入|Obsidian 仓库路径已确认|正在生成当前会话断点)", text):
-            continue
-        score = index * 2
-        if re.search(r"(?:根因|结论|已(?:完成|修复|验证|同步|写入)|当前|后续|限制|问题)", text):
-            score += 14
-        # 中间进度播报在 transcript 末尾最常见，却无法帮助新会话恢复事实。
-        if re.search(r"(?:^|。|\n)(?:我会|现在会|接下来会|正在|随后会|I will)", text[:400]):
-            score -= 24
-        candidates.append((score, index, text))
+def _assistant_resume_block(updates, user_prompts=None) -> str:
+    """保留跨阶段的关键结论，让新会话可凭断点继续而非重读完整 transcript。"""
+    candidates = _assistant_recovery_candidates(updates, user_prompts)
     if not candidates:
         return "（尚未提取到可用于续接的助手结论）"
-    # 优先保留一条收束性回复；如果它过短，再补一条较早的有效结论。
-    candidates.sort(reverse=True)
-    primary = candidates[0][2]
-    if len(primary) >= 160:
-        return primary
-    primary_terms = set(re.findall(r"[A-Za-z][A-Za-z0-9_-]*|[\u4e00-\u9fff]{2,}", primary.lower()))
-    for _, _, extra in candidates[1:]:
-        extra_terms = set(re.findall(r"[A-Za-z][A-Za-z0-9_-]*|[\u4e00-\u9fff]{2,}", extra.lower()))
-        if extra != primary and len(primary_terms.intersection(extra_terms)) >= 2:
-            combined = primary + "\n\n" + extra
-            return _short_resume_text(combined, 1500)
-    return primary
+
+    def terms(text: str) -> set[str]:
+        return set(re.findall(r"[A-Za-z][A-Za-z0-9_-]*|[\u4e00-\u9fff]{2,}", text.lower()))
+
+    ranked = sorted(candidates, reverse=True)
+    score_floor = ranked[0][0] - 22
+    eligible = [candidate for candidate in candidates if candidate[0] >= score_floor]
+    selected = []
+    selected_terms = []
+
+    def add_candidate(candidate) -> None:
+        candidate_terms = terms(candidate[2])
+        if any(
+            candidate_terms
+            and selected_term
+            and len(candidate_terms & selected_term) / max(len(candidate_terms | selected_term), 1) >= 0.72
+            for selected_term in selected_terms
+        ):
+            return
+        selected.append(candidate)
+        selected_terms.append(candidate_terms)
+
+    # 先从早、中、晚三个阶段各取一条强结论，避免末尾追问淹没已完成的主线。
+    last_index = max(candidate[1] for candidate in candidates)
+    phase_limits = (
+        (0, max(0, round(last_index * 0.34))),
+        (max(0, round(last_index * 0.34)) + 1, max(0, round(last_index * 0.68))),
+        (max(0, round(last_index * 0.68)) + 1, last_index),
+    )
+    for start, end in phase_limits:
+        scoped = [candidate for candidate in eligible if start <= candidate[1] <= end]
+        if scoped:
+            add_candidate(max(scoped, key=lambda item: (item[0], item[1])))
+        if len(selected) == 3:
+            break
+
+    # 会话很短、某一阶段没有有效结论时，以全局得分补齐。
+    for candidate in ranked:
+        if candidate[0] < score_floor:
+            continue
+        add_candidate(candidate)
+        if len(selected) == 3:
+            break
+    selected.sort(key=lambda item: item[1])
+    return "\n\n".join(_short_resume_text(item[2], 650) for item in selected)
 
 
 def _session_goal_block(prompts) -> str:
-    """保留少量目标变化，避免把每条用户消息完整粘进断点。"""
+    """记录初始目标、关键推进与最新目标，保留会话方向而非末尾三句。"""
     normalized = []
     seen = set()
     for prompt in prompts or []:
@@ -1135,9 +1397,28 @@ def _session_goal_block(prompts) -> str:
         normalized.append(text)
     if not normalized:
         return "（未提取到会话目标）"
-    # 只保留最近目标，避免断点退化成完整对话的替代副本。
-    selected = _dedupe_items(normalized[-3:], 3)
-    return "\n".join(f"- {_short_resume_text(item, 180)}" for item in selected)
+    concise = [
+        item for item in normalized
+        if len(item) <= 220
+        and "```" not in item
+        and not item.lstrip().startswith(("---", "# "))
+    ] or normalized
+    selected = [("初始目标", concise[0])]
+    if len(concise) >= 4:
+        for fraction in (0.34, 0.67):
+            index = min(len(concise) - 2, max(1, round((len(concise) - 1) * fraction)))
+            candidate = concise[index]
+            if not any(_checkpoint_titles_match(candidate, existing) for _, existing in selected):
+                selected.append(("关键推进", candidate))
+    latest = concise[-1]
+    if not any(_checkpoint_titles_match(latest, existing) for _, existing in selected):
+        selected.append(("最新目标", latest))
+    elif len(selected) == 1:
+        selected[0] = ("当前目标", latest)
+    return "\n\n".join(
+        f"- **{label}**：{_short_resume_text(item, 180)}"
+        for label, item in selected[:4]
+    )
 
 
 def _knowledge_write_paths(ctx: dict) -> list:
@@ -1154,11 +1435,11 @@ def _knowledge_link(file_path: str) -> str:
 
 
 def _daily_index_link(file_path: str) -> str:
-    """Markdown 表格内禁用 wikilink 别名，避免内部竖线被表格解析器拆列。"""
+    """为 Markdown 表格生成显示紧凑且可点击的 Obsidian 链接。"""
     path = Path(file_path)
     try:
-        rel = path.relative_to(VAULT_ROOT).with_suffix("")
-        return f"[[{rel}]]"
+        rel = path.resolve().relative_to(VAULT_ROOT).with_suffix("")
+        return f"[[{rel.as_posix()}\\|{path.stem}]]"
     except Exception:
         return f"[[{path.stem}]]"
 
@@ -1190,6 +1471,8 @@ def generate_session_note(session_id: str, ctx: dict, status: str, related: list
     short_id = session_id[:12] if len(session_id) > 12 else session_id
     label = STATUS_MAP.get(status, {}).get("label", status)
     topic = ctx["topic"] or "(未提取到话题)"
+    title_baseline = str(ctx.get("title_baseline") or topic).strip()
+    title_source = str(ctx.get("title_source") or "inferred").strip()
     checkpoint_category = str(ctx.get("checkpoint_category", "")).strip()
     checkpoint_category_line = f'checkpoint_category: "{checkpoint_category}"\n' if checkpoint_category else ""
     platform = "codex"
@@ -1213,7 +1496,8 @@ def generate_session_note(session_id: str, ctx: dict, status: str, related: list
     meta_block = "\n".join(meta_lines)
     goals_block = _session_goal_block(ctx.get("user_prompts", []))
     assistant_block = _assistant_resume_block(
-        ctx.get("assistant_updates") or [ctx.get("latest_assistant_update", "")]
+        ctx.get("assistant_updates") or [ctx.get("latest_assistant_update", "")],
+        ctx.get("user_prompts", []),
     )
     knowledge_writes = _knowledge_write_paths(ctx)
     if knowledge_writes:
@@ -1263,6 +1547,8 @@ category: {json.dumps(ctx.get('category', []), ensure_ascii=False)}
 {checkpoint_category_line}tags: {json.dumps(ctx.get('tags', []), ensure_ascii=False)}
 keywords: {json.dumps(ctx.get('keywords', []), ensure_ascii=False)}
 aliases: {json.dumps(ctx.get('keywords', []) + ctx.get('tags', []), ensure_ascii=False)}
+title_baseline: {json.dumps(title_baseline, ensure_ascii=False)}
+title_source: {json.dumps(title_source, ensure_ascii=False)}
 {archive_frontmatter}---
 
 # {topic}
@@ -1310,85 +1596,252 @@ aliases: {json.dumps(ctx.get('keywords', []) + ctx.get('tags', []), ensure_ascii
 """
 
 
-def update_daily_index(index_dir: Path, session_note_path: Path | None, session_id: str, ctx: dict, status: str):
-    now = vault_now()
-    timestamp = now.strftime("%H:%M")
-    emoji = STATUS_MAP.get(status, {}).get("emoji", "❓")
-    topic = ctx["topic"][:60] if ctx["topic"] else "未记录话题"
-    knowledge_writes = _knowledge_write_paths(ctx) if session_note_path else []
-    if knowledge_writes:
-        note_names = [_daily_index_link(path) for path in knowledge_writes]
-        yield_str = " · ".join(note_names)
-    else:
-        yield_str = "—"
-    if session_note_path:
-        link_target = _note_relative_target(session_note_path)
-        topic_cell = f"[[{link_target}|{session_note_path.stem}]]"
-    else:
-        link_target = session_id
-        topic = re.sub(r"[|\r\n]", " ", topic).strip()
-        round_count = int(ctx.get("round_count", 0))
-        topic_cell = f"{topic}（未生成断点 {round_count}/{AUTO_CHECKPOINT_MIN_ROUNDS}）"
-    marker = f"<!-- session:{session_id} -->"
-    existing_rows = []
-    for candidate in sorted(index_dir.glob("*.md")):
-        try:
-            lines = candidate.read_text(encoding="utf-8").splitlines(keepends=True)
-        except (FileNotFoundError, OSError):
-            continue
-        for row_index, line in enumerate(lines):
-            if marker in line and line.lstrip().startswith("|"):
-                existing_rows.append((candidate, row_index, line))
+def _compact_index_text(text: str, limit: int = 42) -> str:
+    compact = re.sub(r"\s+", " ", str(text or "")).strip()
+    compact = re.sub(r"[|\r\n]", " ", compact).strip()
+    return compact if len(compact) <= limit else compact[: limit - 3].rstrip() + "..."
 
-    # 手动重写或移动会话时保留原索引日期和时间，并消除同一 session 的重复行。
-    if existing_rows:
-        index_path, selected_row, selected_line = existing_rows[0]
-        existing_timestamp = re.match(r"^\|\s*([^|]+?)\s*\|", selected_line)
-        if existing_timestamp:
-            timestamp = existing_timestamp.group(1).strip()
-    else:
-        today = now.strftime("%Y-%m-%d")
-        index_path = index_dir / f"{today}.md"
-    entry = f"| {timestamp} | {emoji} | {topic_cell} | {yield_str} | {marker}\n"
 
-    if existing_rows:
-        rows_by_path = {}
-        for path, row_index, _line in existing_rows:
-            rows_by_path.setdefault(path, set()).add(row_index)
-        selected_path, selected_row, _selected_line = existing_rows[0]
-        for path, row_indexes in rows_by_path.items():
-            try:
-                lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-            except (FileNotFoundError, OSError):
-                continue
-            rewritten = []
-            for row_index, line in enumerate(lines):
-                if row_index == selected_row and path == selected_path:
-                    rewritten.append(entry)
-                elif row_index in row_indexes:
-                    continue
-                else:
-                    rewritten.append(line)
-            path.write_text("".join(rewritten), encoding="utf-8")
-        return
-
-    if not index_path.exists():
-        header = f"""---
-date: "{index_path.stem}"
+def _daily_index_header(index_date: str) -> str:
+    return f"""---
+date: "{index_date}"
 tags:
   - {INDEX_TAG}
 ---
 
-# 会话记录 - {index_path.stem}
+# 会话记录 - {index_date}
 
 > 每日自动生成 · `{SPACE_NAME}/会话索引/`
 
 | 时间 | 状态 | 话题 | 产出 |
-|---|---|---|---|
+| :--- | :---: | :--- | :--- |
 """
-        index_path.write_text(header, encoding="utf-8")
-    with open(index_path, "a", encoding="utf-8") as f:
-        f.write(entry)
+
+
+def _daily_index_marker(session_id: str, index_date: str) -> str:
+    # 注释留在第四列，避免被 Markdown 当成第五个空白列。
+    return f"<!-- session:{session_id} --> <!-- session-date:{index_date} -->"
+
+
+def _daily_index_row_cells(line: str) -> list[str] | None:
+    stripped = line.strip()
+    if not stripped.startswith("|"):
+        return None
+    cells = []
+    current = []
+    wiki_depth = 0
+    # 旧版曾生成没有结尾竖线的行；Markdown 仍会把它当成表格行。
+    body = stripped[1:-1] if stripped.endswith("|") else stripped[1:]
+    index = 0
+    while index < len(body):
+        char = body[index]
+        pair = body[index:index + 2]
+        if pair == "[[":
+            wiki_depth += 1
+            current.append(pair)
+            index += 2
+            continue
+        if pair == "]]" and wiki_depth:
+            wiki_depth -= 1
+            current.append(pair)
+            index += 2
+            continue
+        if char == "|" and wiki_depth == 0:
+            cells.append("".join(current).strip())
+            current = []
+        else:
+            current.append(char)
+        index += 1
+    cells.append("".join(current).strip())
+    return cells
+
+
+def _daily_index_link_label(target: str) -> str:
+    """为表格内链接生成简短、稳定的显示标题。"""
+    base_target = (target or "").split("#", 1)[0].strip()
+    label = base_target.rsplit("/", 1)[-1].strip()
+    return label or "笔记"
+
+
+def _daily_index_safe_wikilinks(text: str) -> str:
+    """表格别名使用转义竖线，保持可点击且不会被 Markdown 拆列。"""
+    safe_text = text or ""
+    # 将旧版未转义别名迁移为 Obsidian 可识别的安全别名。
+    safe_text = re.sub(
+        r"\[\[([^|\]]+)(?<!\\)\|([^\]]+)\]\]",
+        lambda match: f"[[{match.group(1)}\\|{match.group(2)}]]",
+        safe_text,
+    )
+
+    # 裸链接会展示完整 vault 路径，路径型链接改为紧凑标题。
+    def compact_bare_link(match):
+        target = match.group(1)
+        if "/" not in target:
+            return match.group(0)
+        return f"[[{target}\\|{_daily_index_link_label(target)}]]"
+
+    return re.sub(r"\[\[([^|\\\]]+)\]\]", compact_bare_link, safe_text)
+
+
+def _normalize_daily_index_layout(index_path: Path) -> None:
+    """将旧五列表格和超长未生成断点行压缩为统一四列。"""
+    try:
+        lines = index_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    except (FileNotFoundError, OSError):
+        return
+    rewritten = []
+    for line in lines:
+        cells = _daily_index_row_cells(line)
+        if cells is None:
+            rewritten.append(line)
+            continue
+        if cells and cells[0] == "时间":
+            rewritten.append("| 时间 | 状态 | 话题 | 产出 |\n")
+            continue
+        if cells and all(re.fullmatch(r"[-: ]+", cell or "") for cell in cells):
+            rewritten.append("| :--- | :---: | :--- | :--- |\n")
+            continue
+        if len(cells) < 4:
+            rewritten.append(line)
+            continue
+        marker_comments = []
+        for cell in cells[4:]:
+            marker_comments.extend(re.findall(r"<!--\s*[^>]+-->", cell))
+        cells = cells[:4]
+        cells[2] = _daily_index_safe_wikilinks(cells[2])
+        cells[3] = _daily_index_safe_wikilinks(cells[3])
+        if marker_comments:
+            cells[3] = (cells[3] + " " + " ".join(marker_comments)).strip()
+        if "[[" not in cells[2]:
+            cells[2] = _compact_index_text(cells[2])
+        rewritten.append("| " + " | ".join(cells) + " |\n")
+    index_path.write_text("".join(rewritten), encoding="utf-8")
+
+
+def _ensure_daily_index(index_path: Path) -> None:
+    if not index_path.exists():
+        index_path.parent.mkdir(parents=True, exist_ok=True)
+        index_path.write_text(_daily_index_header(index_path.stem), encoding="utf-8")
+        return
+    _normalize_daily_index_layout(index_path)
+
+
+def _index_row_date(line: str, fallback_date: str) -> str:
+    matched = re.search(r"<!--\s*session-date:(\d{4}-\d{2}-\d{2})\s*-->", line)
+    return matched.group(1) if matched else fallback_date
+
+
+def _upsert_daily_index_entry(index_path: Path, session_id: str, index_date: str, entry: str) -> None:
+    marker = f"<!-- session:{session_id} -->"
+    lines = index_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    matching_rows = [
+        row_index
+        for row_index, line in enumerate(lines)
+        if marker in line
+        and line.lstrip().startswith("|")
+        and _index_row_date(line, index_path.stem) == index_date
+    ]
+    if not matching_rows:
+        with index_path.open("a", encoding="utf-8") as handle:
+            handle.write(entry)
+        return
+    selected_row = matching_rows[0]
+    rewritten = []
+    for row_index, line in enumerate(lines):
+        if row_index == selected_row:
+            rewritten.append(entry)
+        elif row_index in matching_rows:
+            continue
+        else:
+            rewritten.append(line)
+    index_path.write_text("".join(rewritten), encoding="utf-8")
+
+
+def _remove_legacy_index_entries(index_dir: Path, session_id: str, keep_dates: set[str]) -> None:
+    marker = f"<!-- session:{session_id} -->"
+    for index_path in index_dir.glob("*.md"):
+        try:
+            lines = index_path.read_text(encoding="utf-8").splitlines(keepends=True)
+        except (FileNotFoundError, OSError):
+            continue
+        rewritten = []
+        changed = False
+        for line in lines:
+            legacy = (
+                marker in line
+                and line.lstrip().startswith("|")
+                and "<!-- session-date:" not in line
+            )
+            if legacy and index_path.stem not in keep_dates:
+                changed = True
+                continue
+            rewritten.append(line)
+        if changed:
+            index_path.write_text("".join(rewritten), encoding="utf-8")
+
+
+def _conversation_time_from_context(ctx: dict, fallback: datetime) -> datetime:
+    conversation_time = _parse_rollout_time(ctx.get("conversation_started_at"))
+    return conversation_time or fallback
+
+
+def _daily_index_time_cell(conversation_time: datetime, update_time: datetime, index_date: str) -> str:
+    if index_date == conversation_time.strftime("%Y-%m-%d") == update_time.strftime("%Y-%m-%d"):
+        return (
+            f"{conversation_time.strftime('%H:%M')}"
+            f"<br><small>session 更新为 {update_time.strftime('%H:%M')}</small>"
+        )
+    # 跨日会话在首日和更新日采用同一种时间语义：第一行是 session
+    # 更新时间，第二行保留原始对话起点，避免将跨日更新时间误读为首日时间。
+    return (
+        f"{update_time.strftime('%H:%M')}"
+        f"<br><small>对话时间 {conversation_time.strftime('%m-%d %H:%M')}</small>"
+    )
+
+
+def update_daily_index(
+    index_dir: Path,
+    session_note_path: Path | None,
+    session_id: str,
+    ctx: dict,
+    status: str,
+    now: datetime | None = None,
+):
+    update_time = now.astimezone(VAULT_TIMEZONE) if now else vault_now()
+    conversation_time = _conversation_time_from_context(ctx, update_time)
+    conversation_date = conversation_time.strftime("%Y-%m-%d")
+    update_date = update_time.strftime("%Y-%m-%d")
+    emoji = STATUS_MAP.get(status, {}).get("emoji", "❓")
+    knowledge_writes = _knowledge_write_paths(ctx) if session_note_path else []
+    note_names = [_daily_index_link(path) for path in knowledge_writes if Path(path).is_file()]
+    if len(note_names) > 2:
+        note_names = note_names[:2] + [f"+{len(note_names) - 2}"]
+    yield_str = " · ".join(note_names) if note_names else "—"
+    if session_note_path:
+        link_target = _note_relative_target(session_note_path)
+        topic_cell = f"[[{link_target}\\|{session_note_path.stem}]]"
+    else:
+        topic = _compact_index_text(ctx.get("topic") or "未记录话题")
+        round_count = int(ctx.get("round_count", 0))
+        topic_cell = f"{topic}<br><small>未生成断点 {round_count}/{AUTO_CHECKPOINT_MIN_ROUNDS}</small>"
+
+    target_dates = [conversation_date]
+    if update_date != conversation_date:
+        target_dates.append(update_date)
+
+    # 旧版本把 session 标记放在第五列。每次写入前统一收敛为四列，
+    # 这样跨日迁移和后续的状态、链接刷新都面对同一种表格结构。
+    index_dir.mkdir(parents=True, exist_ok=True)
+    for existing_index in index_dir.glob("*.md"):
+        _normalize_daily_index_layout(existing_index)
+    _remove_legacy_index_entries(index_dir, session_id, set(target_dates))
+    for index_date in target_dates:
+        index_path = index_dir / f"{index_date}.md"
+        _ensure_daily_index(index_path)
+        time_cell = _daily_index_time_cell(conversation_time, update_time, index_date)
+        marker = _daily_index_marker(session_id, index_date)
+        entry = f"| {time_cell} | {emoji} | {topic_cell} | {yield_str} {marker} |\n"
+        _upsert_daily_index_entry(index_path, session_id, index_date, entry)
 
 
 def collect_restart_candidates() -> list:
@@ -1497,16 +1950,7 @@ def organize_checkpoint_notes() -> tuple[dict, dict]:
         if len(targets) == 1:
             replacements[stem] = next(iter(targets))
 
-    final_note_paths = sorted(NOTE_DIR.rglob("*.md"))
-    for note_path in final_note_paths:
-        try:
-            text = note_path.read_text(encoding="utf-8")
-        except (FileNotFoundError, OSError):
-            continue
-        rewritten = _replace_wikilink_targets(text, replacements)
-        if rewritten != text:
-            note_path.write_text(rewritten, encoding="utf-8")
-    _repair_daily_index_links(INDEX_DIR, replacements)
+    _repair_checkpoint_links(replacements)
 
     return final_paths, {
         "scanned": len(moved_pairs),
@@ -2046,6 +2490,8 @@ def _parse_cli():
     """解析命令行/stdin 输入，返回统一 dict。"""
     result = {"transcript": "", "session": "unknown", "cwd": os.getcwd(), "force": False,
               "manual_checkpoint": "--manual-checkpoint" in sys.argv,
+              "refresh_title": "--refresh-title" in sys.argv,
+              "keep_title": "--keep-title" in sys.argv,
               "platform": "codex", "hook_event_name": "", "hook_event_received": False}
     result["force"] = "--force" in sys.argv
     if "--transcript" in sys.argv:
@@ -2066,6 +2512,8 @@ def _parse_cli():
             platform=result["platform"],
             force=result["force"],
             manual_checkpoint=result["manual_checkpoint"],
+            refresh_title=result["refresh_title"],
+            keep_title=result["keep_title"],
         )
         print(f"[obsidian-hook] Manual mode: transcript={result['transcript']}, session={result['session']}")
     else:
@@ -2175,6 +2623,8 @@ def main():
     transcript_path, session_id, cwd = cli["transcript"], cli["session"], cli["cwd"]
     force = cli["force"]
     manual_checkpoint = cli.get("manual_checkpoint", False)
+    refresh_title = cli.get("refresh_title", False)
+    keep_title = cli.get("keep_title", False)
     platform = "codex"
     hook_event_name = cli.get("hook_event_name", "")
     _debug_log(
@@ -2183,6 +2633,8 @@ def main():
         session=session_id,
         cwd=cwd,
         force=force,
+        refresh_title=refresh_title,
+        keep_title=keep_title,
         platform=platform,
         hook_event_name=hook_event_name,
     )
@@ -2258,49 +2710,54 @@ def main():
         ctx["knowledge_archived"] = True
         ctx["archived_prompt_count"] = archive["prompt_count"]
         ctx["archive_document"] = archive["document"]
-    if existing_note and not force:
-        # 已有笔记：沿用其文件名与 H1 标题（可能已被手动编辑成更贴切的主题）。
+    if existing_note:
+        # 已有断点始终原地更新。标题只有在自动生成且明显需要修复时才变更，
+        # H1 与 title_baseline 不同即视为用户在 Obsidian 中手动改名。
         session_note_path = existing_note
-        try:
-            for line in session_note_path.read_text(encoding="utf-8").splitlines():
-                stripped = line.strip()
-                if stripped.startswith("# "):
-                    existing_title = stripped[2:].strip()
-                    if existing_title:
-                        ctx["topic"] = existing_title
-                    break
-        except Exception:
-            pass
         try:
             existing_note_text = session_note_path.read_text(encoding="utf-8")
         except (FileNotFoundError, OSError):
             existing_note_text = ""
+        existing_title = _extract_h1(existing_note_text, session_note_path.stem)
+        synth = synthesize_topic_and_tags(ctx["user_prompts"], ctx["written_files"], ctx["projects"])
+        preferred_title, preferred_source = _preferred_checkpoint_title(ctx, synth["topic"])
+        if (
+            _should_refresh_checkpoint_title(
+                existing_title,
+                existing_note_text,
+                ctx,
+                refresh_title,
+                keep_title,
+            )
+            and _is_usable_checkpoint_title(preferred_title)
+            and not _checkpoint_titles_match(existing_title, preferred_title)
+        ):
+            session_note_path = _rename_checkpoint_note(session_note_path, preferred_title, session_id)
+            ctx["topic"] = preferred_title
+            ctx["title_baseline"] = preferred_title
+            ctx["title_source"] = preferred_source
+        else:
+            ctx["topic"] = existing_title or session_note_path.stem
+            ctx["title_baseline"] = _frontmatter_string(existing_note_text, "title_baseline") or ctx["topic"]
+            ctx["title_source"] = _frontmatter_string(existing_note_text, "title_source") or "preserved"
         existing_checkpoint_category = _frontmatter_string(existing_note_text, "checkpoint_category")
         if existing_checkpoint_category:
             ctx["checkpoint_category"] = existing_checkpoint_category
-        # tags/keywords：已有则保留，没有则补一次综合（回填）。
+        # tags/keywords：常规刷新保留既有元数据，明确 --force 时才重新综合。
         existing_category, existing_tags, existing_keywords = _read_frontmatter_all(session_note_path)
-        if existing_category and existing_tags and existing_keywords:
+        if not force and existing_category and existing_tags and existing_keywords:
             ctx["category"] = existing_category
             ctx["tags"] = existing_tags
             ctx["keywords"] = existing_keywords
         else:
-            synth = synthesize_topic_and_tags(ctx["user_prompts"], ctx["written_files"], ctx["projects"])
             ctx["category"] = existing_category or synth["category"]
             ctx["tags"] = existing_tags or synth["tags"]
             ctx["keywords"] = existing_keywords or synth["keywords"]
     else:
-        # 新笔记，或 --force 强制重新综合（删旧笔记、重新命名）。
-        if existing_note and force:
-            existing_note.unlink()
+        # 新笔记优先采用 Codex 会话标题，再回退到完整对话中的助手结论。
         synth = synthesize_topic_and_tags(ctx["user_prompts"], ctx["written_files"], ctx["projects"])
-        summary_title = _checkpoint_summary_title(ctx)
-        if summary_title:
-            ctx["topic"] = summary_title
-        elif synth["topic"]:
-            ctx["topic"] = synth["topic"]
-        elif ctx.get("thread_title"):
-            ctx["topic"] = ctx["thread_title"]
+        ctx["topic"], ctx["title_source"] = _preferred_checkpoint_title(ctx, synth["topic"])
+        ctx["title_baseline"] = ctx["topic"]
         ctx["category"] = synth["category"]
         ctx["tags"] = synth["tags"]
         ctx["keywords"] = synth["keywords"]

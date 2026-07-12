@@ -825,7 +825,10 @@ def replace_wikilink_targets(text: str, replacements: dict[str, str]) -> str:
     for old_target, new_target in sorted(replacements.items(), key=lambda item: -len(item[0])):
         if not old_target or old_target == new_target:
             continue
-        pattern = re.compile(r"\[\[" + re.escape(old_target) + r"(?P<anchor>#[^|\]]*)?(?P<alias>\|[^\]]+)?\]\]")
+        pattern = re.compile(
+            r"\[\[" + re.escape(old_target)
+            + r"(?P<anchor>#[^|\\\]]*)?(?P<alias>(?:\\)?\|[^\]]+)?\]\]"
+        )
         result = pattern.sub(
             lambda match: f"[[{new_target}{match.group('anchor') or ''}{match.group('alias') or ''}]]",
             result,
@@ -845,12 +848,15 @@ def checkpoint_link_targets(record: dict, vault_root: Path, records: list[dict])
 
 
 def line_references_target(line: str, target: str) -> bool:
-    pattern = r"\[\[" + re.escape(target) + r"(?:#[^|\]]*)?(?:\|[^\]]+)?\]\]"
+    pattern = (
+        r"\[\[" + re.escape(target)
+        + r"(?:#[^|\\\]]*)?(?:(?:\\)?\|[^\]]+)?\]\]"
+    )
     return bool(re.search(pattern, line))
 
 
 def daily_index_topic_cell(line: str) -> str:
-    cells = line.rstrip("\n").split("|")
+    cells = split_markdown_table_row(line)
     return cells[3] if len(cells) > 3 else ""
 
 
@@ -975,11 +981,22 @@ def refresh_daily_index_link(vault_root: Path, session_id: str, new_path: Path) 
                 continue
             cells = split_markdown_table_row(line)
             marker_index = next((position for position, cell in enumerate(cells) if marker in cell), -1)
-            if marker_index < 5:
+            if marker_index < 4:
                 continue
-            output_cell = cells[marker_index - 1]
-            rebuilt = cells[:3] + [f" [[{new_target}|{new_path.stem}]] ", output_cell, cells[marker_index]]
-            lines[index] = "|".join(rebuilt) + "\n"
+            if marker_index == 4:
+                # 当前索引将 session 标记放在第四列，保持四列结构并更新话题链接。
+                cells[3] = f" [[{new_target}\\|{new_path.stem}]] "
+                lines[index] = "|".join(cells) + "\n"
+            else:
+                # 兼容旧版把标记拆为第五列的行，同时在刷新时迁移成四列。
+                time_cell = cells[1]
+                status_cell = cells[2]
+                output_cell = cells[marker_index - 1]
+                marker_cell = cells[marker_index]
+                lines[index] = (
+                    f"|{time_cell}|{status_cell}| [[{new_target}\\|{new_path.stem}]] |"
+                    f"{output_cell} {marker_cell} |\n"
+                )
             changed = True
         if changed:
             index_path.write_text("".join(lines), encoding="utf-8")
@@ -1160,22 +1177,25 @@ def mark_source_sessions_archived(records: list[dict], target_path: Path, vault_
 
 
 def refresh_daily_index_status(vault_root: Path, archived_paths: list[Path]) -> None:
+    index_dir = vault_root / "Codex工作记录" / "会话索引"
+    if not index_dir.is_dir():
+        return
     for note_path in archived_paths:
         text = read_text(note_path)
-        date_text = extract_frontmatter_value(text, "date")
-        if not date_text:
-            continue
-        index_path = vault_root / "Codex工作记录" / "会话索引" / f"{date_text}.md"
-        if not index_path.is_file():
-            continue
-        lines = index_path.read_text(encoding="utf-8").splitlines(keepends=True)
         session_id = extract_frontmatter_value(text, "session_id")
         marker = f"<!-- session:{session_id} -->" if session_id else ""
-        for index, line in enumerate(lines):
-            if not marker or marker not in line or not line.lstrip().startswith("|"):
-                continue
-            lines[index] = re.sub(r"^(\|\s*[^|]+\|\s*)[^|]+", r"\1📚 ", line)
-        index_path.write_text("".join(lines), encoding="utf-8")
+        if not marker:
+            continue
+        for index_path in index_dir.glob("*.md"):
+            lines = index_path.read_text(encoding="utf-8").splitlines(keepends=True)
+            changed = False
+            for index, line in enumerate(lines):
+                if marker not in line or not line.lstrip().startswith("|"):
+                    continue
+                lines[index] = re.sub(r"^(\|\s*[^|]+\|\s*)[^|]+", r"\1📚 ", line)
+                changed = True
+            if changed:
+                index_path.write_text("".join(lines), encoding="utf-8")
 
 
 def refresh_dashboard(vault_root: Path) -> None:

@@ -90,7 +90,10 @@ aliases: []
             "|---|---|---|---|\n",
         ]
         for session_id, target, label in rows:
-            lines.append(f"| 08:00 | ✅ | [[{target}|{label}]] | — | <!-- session:{session_id} -->\n")
+            lines.append(
+                f"| 08:00 | ✅ | [[{target}\\|{label}]] | — "
+                f"<!-- session:{session_id} --> <!-- session-date:2026-07-13 --> |\n"
+            )
         path.write_text("".join(lines), encoding="utf-8")
         return path
 
@@ -202,7 +205,11 @@ aliases: []
         self.assertNotIn(FAKE_SESSION, index_text)
         self.assertIn(RENAME_SESSION, index_text)
         self.assertIn("Codex工作记录/会话断点/配置 Docker 服务健康检查", index_text)
-        self.assertNotIn("|请只回复一句]]", index_text)
+        self.assertIn(
+            "[[Codex工作记录/会话断点/配置 Docker 服务健康检查\\|配置 Docker 服务健康检查]]",
+            index_text,
+        )
+        self.assertNotIn("请只回复一句]]", index_text)
         self.assertIn(REAL_DUPLICATE_A, index_text)
         self.assertIn(REAL_DUPLICATE_B, index_text)
         self.assertIn("保留的会话", index_text)

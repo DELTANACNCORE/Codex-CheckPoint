@@ -21,6 +21,8 @@ KNOWLEDGE_SESSION = "22222222-2222-2222-2222-222222222222"
 MISSING_SESSION = "33333333-3333-3333-3333-333333333333"
 INTERVIEW_SESSION = "44444444-4444-4444-4444-444444444444"
 RECOVERY_SESSION = "55555555-5555-5555-5555-555555555555"
+TITLE_SESSION = "66666666-6666-6666-6666-666666666666"
+MANUAL_TITLE_SESSION = "77777777-7777-7777-7777-777777777777"
 
 
 def response(role: str, text: str) -> dict:
@@ -80,7 +82,7 @@ class ManualCheckpointClassificationTest(unittest.TestCase):
         shutil.copy2(HOOK, self.hooks / "checkpoint.py")
         self.docker_rollout = self.sessions / f"rollout-2026-07-13T08-00-00-{DOCKER_SESSION}.jsonl"
         self.knowledge_rollout = self.sessions / f"rollout-2026-07-13T08-10-00-{KNOWLEDGE_SESSION}.jsonl"
-        write_rollout(self.docker_rollout, "请升级 Docker 服务并检查健康状态", "服务初始验证已完成。")
+        write_rollout(self.docker_rollout, "请升级 Docker 服务并检查健康状态", "Docker 服务初始验证已完成。")
         write_rollout(
             self.knowledge_rollout,
             "请整理 Obsidian 知识库 checkpoint 工作流",
@@ -153,6 +155,15 @@ session_ids: ["{session_id}"]
         )
         return path
 
+    def set_thread_title(self, session_id: str, title: str) -> None:
+        session_index = self.home / ".codex" / "session_index.jsonl"
+        session_index.parent.mkdir(parents=True, exist_ok=True)
+        with session_index.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({
+                "id": session_id,
+                "thread_name": title,
+            }, ensure_ascii=False) + "\n")
+
     def test_manual_checkpoint_classifies_all_saved_sessions(self) -> None:
         docker_result = self.run_hook(self.docker_rollout, DOCKER_SESSION)
         knowledge_result = self.run_hook(self.knowledge_rollout, KNOWLEDGE_SESSION)
@@ -174,7 +185,7 @@ session_ids: ["{session_id}"]
         knowledge_note = self.note_for_session(KNOWLEDGE_SESSION)
         self.assertEqual(docker_note.parent.name, "系统与运维")
         self.assertEqual(knowledge_note.parent.name, "知识库与工作流")
-        self.assertIn("# Docker 服务升级流程已完成并通过健康检查", docker_note.read_text(encoding="utf-8"))
+        self.assertIn("# Docker 服务初始验证已完成", docker_note.read_text(encoding="utf-8"))
         self.assertIn('checkpoint_category: "系统与运维"', docker_note.read_text(encoding="utf-8"))
         self.assertEqual(list(note_dir.glob("*.md")), [])
 
@@ -188,7 +199,7 @@ session_ids: ["{session_id}"]
         append_assistant_response(self.docker_rollout, "Docker 服务已经再次启动。")
         keep_title_result = self.run_checkpoint_skill(DOCKER_SESSION, "--keep-title")
         self.assertEqual(keep_title_result.returncode, 0, keep_title_result.stderr + keep_title_result.stdout)
-        self.assertIn("# Docker 服务升级流程已完成并通过健康检查", self.note_for_session(DOCKER_SESSION).read_text(encoding="utf-8"))
+        self.assertIn("# Docker 服务初始验证已完成", self.note_for_session(DOCKER_SESSION).read_text(encoding="utf-8"))
 
         retrieve_result = subprocess.run(
             [sys.executable, str(RETRIEVE_HOOK), "--vault-root", str(self.vault)],
@@ -258,6 +269,108 @@ session_ids: ["{session_id}"]
         self.assertEqual(note.parent.name, "学习与写作")
         self.assertIn("# 面经准备", note.read_text(encoding="utf-8"))
         self.assertNotIn("本次对话已写入.md", str(note))
+
+    def test_manual_checkpoint_repairs_mechanical_title_from_full_context(self) -> None:
+        rollout = self.sessions / f"rollout-2026-07-13T09-05-00-{TITLE_SESSION}.jsonl"
+        write_rollout(
+            rollout,
+            "请按照安装文档配置多个搜索 MCP",
+            "网页搜索 MCP 已配置完成，并已验证认证和基础检索。",
+        )
+        append_assistant_response(rollout, "图片搜索 MCP 已配置完成，独立密钥与工具发现均已验证。")
+        append_assistant_response(rollout, "新闻搜索 MCP 已恢复可用，旧会话的额度错误来自此前认证状态。")
+        append_assistant_response(
+            rollout,
+            "已写入恢复断点：[旧标题.md](/tmp/old.md)。全量分类完成，扫描 9 条断点并归类了 1 条记录。",
+        )
+        self.set_thread_title(TITLE_SESSION, "安装并配置 Agent")
+
+        note_dir = self.vault / "Codex工作记录" / "会话断点" / "系统与运维"
+        old_note = note_dir / "之前失败时，服务端返回的是 user quota is not enough.md"
+        note_dir.mkdir(parents=True)
+        old_target = "Codex工作记录/会话断点/系统与运维/之前失败时，服务端返回的是 user quota is not enough"
+        old_note.write_text(
+            f"""---
+session_id: "{TITLE_SESSION}"
+status: "interrupted"
+projects: []
+tags: []
+keywords: []
+aliases: []
+---
+
+# 之前失败时，服务端返回的是 user quota is not enough
+
+## 可直接续接的结论
+
+旧回执
+""",
+            encoding="utf-8",
+        )
+        index_path = self.vault / "Codex工作记录" / "会话索引" / "2026-07-13.md"
+        index_path.parent.mkdir(parents=True)
+        index_path.write_text(
+            f"| 09:05 | ⚠️ | [[{old_target}\\|旧标题]] | — <!-- session:{TITLE_SESSION} --> |\n",
+            encoding="utf-8",
+        )
+        project_path = self.vault / "项目总结" / "MCP 安装.md"
+        project_path.parent.mkdir(parents=True)
+        project_path.write_text(f"[[{old_target}\\|旧标题]]\n", encoding="utf-8")
+
+        result = self.run_checkpoint_skill(TITLE_SESSION)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        note = self.note_for_session(TITLE_SESSION)
+        note_text = note.read_text(encoding="utf-8")
+        self.assertEqual(note.stem, "安装并配置 Agent")
+        self.assertIn("# 安装并配置 Agent", note_text)
+        self.assertIn('title_baseline: "安装并配置 Agent"', note_text)
+        self.assertIn('title_source: "thread"', note_text)
+        self.assertIn("网页搜索 MCP 已配置完成", note_text)
+        self.assertIn("新闻搜索 MCP 已恢复可用", note_text)
+        self.assertNotIn("全量分类完成", note_text)
+        self.assertIn("**初始目标**", note_text)
+        self.assertIn("**最新目标**", note_text)
+        self.assertFalse(old_note.exists())
+        self.assertNotIn(old_target, index_path.read_text(encoding="utf-8"))
+        self.assertNotIn(old_target, project_path.read_text(encoding="utf-8"))
+
+    def test_manual_checkpoint_preserves_a_title_changed_in_obsidian(self) -> None:
+        rollout = self.sessions / f"rollout-2026-07-13T09-06-00-{MANUAL_TITLE_SESSION}.jsonl"
+        write_rollout(
+            rollout,
+            "配置搜索 MCP 并验证联网能力",
+            "搜索 MCP 的初始配置已经完成。",
+        )
+        append_assistant_response(rollout, "最新验证表明搜索 MCP 已经可用。")
+        self.set_thread_title(MANUAL_TITLE_SESSION, "配置搜索 MCP")
+
+        note_dir = self.vault / "Codex工作记录" / "会话断点" / "工具与配置"
+        note_dir.mkdir(parents=True)
+        user_named_note = note_dir / "用户确认的 MCP 配置方案.md"
+        user_named_note.write_text(
+            f"""---
+session_id: "{MANUAL_TITLE_SESSION}"
+status: "completed"
+projects: []
+tags: []
+keywords: []
+aliases: []
+title_baseline: "搜索 MCP 的初始配置已经完成"
+title_source: "assistant"
+---
+
+# 用户确认的 MCP 配置方案
+""",
+            encoding="utf-8",
+        )
+
+        result = self.run_checkpoint_skill(MANUAL_TITLE_SESSION)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        note = self.note_for_session(MANUAL_TITLE_SESSION)
+        self.assertEqual(note, user_named_note)
+        note_text = note.read_text(encoding="utf-8")
+        self.assertIn("# 用户确认的 MCP 配置方案", note_text)
+        self.assertIn('title_baseline: "搜索 MCP 的初始配置已经完成"', note_text)
 
     def test_recovery_disclosure_and_response_annotation_do_not_pollute_checkpoint(self) -> None:
         rollout = self.sessions / f"rollout-2026-07-13T09-10-00-{RECOVERY_SESSION}.jsonl"

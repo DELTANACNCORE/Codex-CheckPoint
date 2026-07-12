@@ -14,6 +14,7 @@ def parse_args():
     parser.add_argument("--rollout")
     parser.add_argument("--session-id")
     parser.add_argument("--keep-title", action="store_true")
+    parser.add_argument("--refresh-title", action="store_true")
     return parser.parse_args()
 
 
@@ -83,8 +84,11 @@ def main():
         "--session-id",
         session_id,
     ]
-    if not args.keep_title:
-        cmd.append("--force")
+    if args.keep_title:
+        cmd.append("--keep-title")
+    else:
+        # 手动 checkpoint 会检查自动生成的标题是否需要刷新，但不会删除已有笔记。
+        cmd.append("--refresh-title")
 
     proc = subprocess.run(cmd, text=True, capture_output=True, check=False)
     if proc.stdout:
