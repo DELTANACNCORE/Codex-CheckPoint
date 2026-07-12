@@ -7,6 +7,12 @@ __pycache__/
 .pytest_cache/
 settings.local.json
 
+# Codex 运行数据与迁移归档，不进入公开仓库
+.codex/sessions/
+.codex/logs/
+checkpoint*-migrate-*.tar.gz
+work/
+
 # 个人数据，不分享
 知识库/
 memory/

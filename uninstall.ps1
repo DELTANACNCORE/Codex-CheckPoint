@@ -1,76 +1,79 @@
-# checkpoint 卸载脚本 (Windows / PowerShell)
 $ErrorActionPreference = "Stop"
 
-$Settings = Join-Path $env:USERPROFILE ".claude\settings.json"
-$SkillsDir = Join-Path $env:USERPROFILE ".claude\skills"
+$CodexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME ".codex" }
+$HooksJson = Join-Path $CodexHome "hooks.json"
+$SkillsDir = Join-Path $CodexHome "skills"
+$AgentsDst = Join-Path $CodexHome "AGENTS.md"
 
-Write-Host "[checkpoint] 正在卸载..."
+Write-Host "[checkpoint-codex] 正在卸载..."
 
-if (-not (Test-Path $Settings)) {
-    Write-Host "[checkpoint] $Settings 不存在，无需卸载"
-} else {
-    $py = @'
-import json, sys, os
-sp = os.path.expanduser(sys.argv[1])
+if (Test-Path $HooksJson) {
+  $py = @'
+import json, sys
+hooks_path = sys.argv[1]
 try:
-    with open(sp, "r", encoding="utf-8") as f: data = json.load(f)
+    with open(hooks_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
 except (FileNotFoundError, json.JSONDecodeError):
-    print("[checkpoint] 配置文件不存在或无效，跳过")
+    print("[checkpoint-codex] hooks.json 不存在或无效，跳过")
     sys.exit(0)
 
-cleaned = False
-for hook_type in ("Stop", "PreToolUse"):
-    hooks = data.get("hooks", {}).get(hook_type, [])
-    if not hooks: continue
-    before = len(hooks)
-    hooks[:] = [e for e in hooks if not any(
-        "checkpoint.py" in h.get("command", "") or "pretool.py" in h.get("command", "")
-        for h in e.get("hooks", [])
-    )]
-    after = len(hooks)
-    if after < before:
-        cleaned = True
-        print(f"[checkpoint] 已清理 hooks.{hook_type}: {before}->{after}")
-    if not hooks:
-        data["hooks"].pop(hook_type, None)
+hooks = data.get("hooks", {})
+targets = {
+    "Stop": ("checkpoint.py", "stop-wrapper.py", "probe-hook.py"),
+    "UserPromptSubmit": ("checkpoint.py", "stop-wrapper.py", "probe-hook.py"),
+    "PreToolUse": ("pretool.py", "pretool-wrapper.py", "probe-hook.py"),
+}
+changed = False
+for hook_name, tokens in targets.items():
+    entries = hooks.get(hook_name, [])
+    if not entries:
+        continue
+    before = len(entries)
+    entries[:] = [
+        entry for entry in entries
+        if not any(any(token in h.get("command", "") for token in tokens) for h in entry.get("hooks", []))
+    ]
+    after = len(entries)
+    if after != before:
+        changed = True
+        print(f"[checkpoint-codex] 已清理 hooks.{hook_name}: {before}->{after}")
+    if not entries:
+        hooks.pop(hook_name, None)
 
-env = data.get("env", {})
-vault = env.pop("OBSIDIAN_VAULT", None)
-if vault:
-    cleaned = True
-    print(f"[checkpoint] 已移除 env.OBSIDIAN_VAULT ({vault})")
-if not env:
-    data.pop("env", None)
-if not data.get("hooks"):
-    data.pop("hooks", None)
-
-if cleaned:
-    with open(sp, "w", encoding="utf-8") as f:
+if changed:
+    with open(hooks_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
         f.write("\n")
-    print(f"[checkpoint] 配置已更新: {sp}")
+    print(f"[checkpoint-codex] hooks.json 已更新: {hooks_path}")
 else:
-    print("[checkpoint] 未找到 checkpoint 相关配置")
+    print("[checkpoint-codex] 未找到需要清理的 hook")
 '@
-    $py | python - $Settings
+  $py | python - $HooksJson
 }
 
-# 清理 skills
-foreach ($skill in @("checkpoint", "synthesize")) {
-    $d = Join-Path $SkillsDir $skill
-    if (Test-Path $d) {
-        Remove-Item -Recurse -Force $d
-        Write-Host "[checkpoint] 已删除 skill: $d"
-    }
+foreach ($skill in @("checkpoint", "search", "synthesize")) {
+  $path = Join-Path $SkillsDir $skill
+  if (Test-Path $path) {
+    Remove-Item $path -Recurse -Force
+    Write-Host "[checkpoint-codex] 已删除 skill: $path"
+  }
 }
 
-# 清理 bak
-$Bak = "$Settings.bak"
-if (Test-Path $Bak) {
-    Remove-Item -Force $Bak
-    Write-Host "[checkpoint] 已删除备份: $Bak"
+foreach ($hook in @("checkpoint.py", "pretool.py", "stop-wrapper.py", "pretool-wrapper.py", "retrieve.py")) {
+  $hookPath = Join-Path $CodexHome "hooks/$hook"
+  if (Test-Path $hookPath) {
+    Remove-Item $hookPath -Force
+    Write-Host "[checkpoint-codex] 已删除 hook: $hookPath"
+  }
+}
+
+if ((Test-Path $AgentsDst) -and (Select-String -Path $AgentsDst -Pattern '^# Codex Checkpoint Guide$' -Quiet)) {
+  Remove-Item $AgentsDst -Force
+  Write-Host "[checkpoint-codex] 已删除自动生成的 AGENTS 模板: $AgentsDst"
 }
 
 Write-Host ""
-Write-Host "[checkpoint] 卸载完成。"
-Write-Host "  - 断点笔记/每日索引仍保留在 vault（如需删除：删 Claude方案/会话断点/ 和 Claude方案/会话索引/）"
+Write-Host "[checkpoint-codex] 卸载完成。"
+Write-Host "- 你的 Obsidian 笔记仍然保留在 vault 里"
+Write-Host "- 如需继续使用，重新运行 install.ps1 即可"

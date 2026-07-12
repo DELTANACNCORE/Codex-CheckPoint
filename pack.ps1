@@ -1,48 +1,40 @@
-# checkpoint 知识库打包脚本 (Windows / PowerShell)
 $ErrorActionPreference = "Stop"
-chcp 65001 > $null
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-$Settings = Join-Path $env:USERPROFILE ".claude\settings.json"
-
-# 读安装时存的 OBSIDIAN_VAULT
-$Vault = $null
-if (Test-Path $Settings) {
+$Vault = $env:OBSIDIAN_VAULT
+if (-not $Vault) {
+  $HooksJson = Join-Path $HOME ".codex\hooks.json"
+  if (Test-Path $HooksJson) {
     try {
-        $data = Get-Content $Settings -Raw -Encoding UTF8 | ConvertFrom-Json
-        $Vault = $data.env.OBSIDIAN_VAULT
+      $raw = Get-Content $HooksJson -Raw -Encoding UTF8
+      if ($raw -match '--vault-root\s+("?)([^"\r\n]+)\1') {
+        $Vault = $Matches[2]
+      }
     } catch {}
+  }
 }
 
 if (-not $Vault) {
-    $Default = Join-Path $env:USERPROFILE "obsidian\知识库"
-    $Vault = Read-Host "Obsidian vault 路径 [默认: $Default]"
-    if (-not $Vault) { $Vault = $Default }
+  $Default = Join-Path $HOME "obsidian\知识库"
+  $Vault = Read-Host "Obsidian vault 路径 [默认: $Default]"
+  if (-not $Vault) { $Vault = $Default }
 }
 
-$Plans = Join-Path $Vault "Claude方案"
-$Dash = Join-Path $Vault "_知识库首页.md"
-$Projects = Join-Path $env:USERPROFILE ".claude\projects"
-$Timestamp = Get-Date -Format "yyyyMMdd-HHmm"
-$Out = "checkpoint-migrate-$Timestamp.zip"
+$Out = "checkpoint-codex-migrate-$(Get-Date -Format 'yyyyMMdd-HHmmss').tar.gz"
 
-Write-Host "[pack] vault: $Vault"
+Write-Host "[pack-codex] vault: $Vault"
 
-if (-not (Test-Path $Plans)) {
-    Write-Error "[pack] Claude方案/ 不存在，目录不对？"
-    exit 1
+if (-not (Test-Path (Join-Path $Vault "Codex工作记录"))) {
+  Write-Error "[pack-codex] Codex工作记录/ 不存在，目录不对？"
+  exit 1
 }
 
-# 首页如果在 vault 根也打进去
-if (Test-Path $Dash) { Copy-Item $Dash $Plans -Force }
-
-# tar 在 Win10 1803+ 可用
-tar -czf $Out -C $Vault Claude方案 -C $env:USERPROFILE .claude/projects 2>$null
-
-if (Test-Path (Join-Path $Plans "_知识库首页.md")) {
-    Remove-Item (Join-Path $Plans "_知识库首页.md") -Force
+$Items = @("Codex工作记录")
+foreach ($Item in @("项目总结", "长期经验总结", "知识库首页.md", "Codex协同Obsidian工作流skill更新日志.md")) {
+  if (Test-Path (Join-Path $Vault $Item)) { $Items += $Item }
 }
+
+tar -czf $Out -C $Vault @Items -C $HOME .codex/sessions 2>$null
 
 $Size = (Get-Item $Out).Length / 1MB
-Write-Host "[pack] -> $Out ($([math]::Round($Size,1))MB)"
-Write-Host "[pack] 传到新电脑后跑 unpack.ps1"
+Write-Host "[pack-codex] -> $Out ($([math]::Round($Size,1))MB)"
+Write-Host "[pack-codex] 传到新电脑后运行 unpack.ps1"

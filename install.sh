@@ -1,178 +1,254 @@
 #!/usr/bin/env bash
-# checkpoint 机制安装脚本
-# 把 Stop hook 注册到用户级 ~/.claude/settings.json（任意目录启动 claude 都生效）。
-# 幂等：重复运行不会重复注册。不会动你已有的 env / theme / 其他 hook。
 set -euo pipefail
 
 LITE=false
 if [ "${1:-}" = "--lite" ]; then
-    LITE=true
-    echo "[checkpoint] 安装模式: Lite（仅手动 /checkpoint，不额外调 API）"
+  LITE=true
+  echo "[checkpoint-codex] 安装模式: Lite（仅手动 /checkpoint）"
 else
-    echo "[checkpoint] 安装模式: Full（自动 Stop hook + 手动 /checkpoint）"
+  echo "[checkpoint-codex] 安装模式: Full（自动 hook + 手动 /checkpoint）"
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HOOK_PATH="$SCRIPT_DIR/.claude/hooks/checkpoint.py"
-SETTINGS="$HOME/.claude/settings.json"
+HOOK_SRC="$SCRIPT_DIR/.codex/hooks/checkpoint.py"
+PRETOOL_SRC="$SCRIPT_DIR/.codex/hooks/pretool.py"
+STOP_WRAPPER_SRC="$SCRIPT_DIR/.codex/hooks/stop-wrapper.py"
+RETRIEVE_SRC="$SCRIPT_DIR/.codex/hooks/retrieve.py"
+PRETOOL_WRAPPER_SRC="$SCRIPT_DIR/.codex/hooks/pretool-wrapper.py"
+if [ "$LITE" = true ]; then
+  SKILL_SRC="$SCRIPT_DIR/.codex/skills/checkpoint-lite"
+else
+  SKILL_SRC="$SCRIPT_DIR/.codex/skills/checkpoint"
+fi
+SEARCH_SRC="$SCRIPT_DIR/.codex/skills/search"
+SYNTH_SRC="$SCRIPT_DIR/.codex/skills/synthesize"
+CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
+HOOK_DST_DIR="$CODEX_HOME/hooks"
+HOOK_DST="$HOOK_DST_DIR/checkpoint.py"
+PRETOOL_DST="$HOOK_DST_DIR/pretool.py"
+STOP_WRAPPER_DST="$HOOK_DST_DIR/stop-wrapper.py"
+RETRIEVE_DST="$HOOK_DST_DIR/retrieve.py"
+PRETOOL_WRAPPER_DST="$HOOK_DST_DIR/pretool-wrapper.py"
+SKILL_DST_DIR="$CODEX_HOME/skills"
+SKILL_DST="$SKILL_DST_DIR/checkpoint"
+SEARCH_DST="$SKILL_DST_DIR/search"
+SYNTH_DST="$SKILL_DST_DIR/synthesize"
+AGENTS_DST="$CODEX_HOME/AGENTS.md"
+HOOKS_JSON="$CODEX_HOME/hooks.json"
+CONFIG_TOML="$CODEX_HOME/config.toml"
 DEFAULT_VAULT="$HOME/obsidian/知识库"
 
-echo "[checkpoint] 仓库目录: $SCRIPT_DIR"
-echo "[checkpoint] hook 脚本: $HOOK_PATH"
+echo "[checkpoint-codex] 仓库目录: $SCRIPT_DIR"
+echo "[checkpoint-codex] Codex 目录: $CODEX_HOME"
 
-if [ ! -f "$HOOK_PATH" ]; then
-  echo "[checkpoint] ✗ 找不到 hook 脚本: $HOOK_PATH" >&2
+if [ ! -f "$HOOK_SRC" ]; then
+  echo "[checkpoint-codex] ✗ 找不到 hook 脚本: $HOOK_SRC" >&2
   exit 1
 fi
 
-# 询问 Obsidian vault 路径（回车用默认）
+if [ ! -f "$PRETOOL_SRC" ]; then
+  echo "[checkpoint-codex] ✗ 找不到 PreToolUse 脚本: $PRETOOL_SRC" >&2
+  exit 1
+fi
+
+if [ ! -f "$STOP_WRAPPER_SRC" ]; then
+  echo "[checkpoint-codex] ✗ 找不到 Stop wrapper: $STOP_WRAPPER_SRC" >&2
+  exit 1
+fi
+
+if [ ! -f "$RETRIEVE_SRC" ]; then
+  echo "[checkpoint-codex] ✗ 找不到检索 hook: $RETRIEVE_SRC" >&2
+  exit 1
+fi
+
+if [ ! -f "$PRETOOL_WRAPPER_SRC" ]; then
+  echo "[checkpoint-codex] ✗ 找不到 PreTool wrapper: $PRETOOL_WRAPPER_SRC" >&2
+  exit 1
+fi
+
 echo
-echo "断点笔记会写到你的 Obsidian vault 下的 Claude方案/ 目录。"
+echo "断点笔记会写到你的 Obsidian vault 下的 Codex工作记录/ 目录。"
 read -r -p "你的 Obsidian vault 路径 [默认: $DEFAULT_VAULT]: " VAULT
 VAULT="${VAULT:-$DEFAULT_VAULT}"
 
-mkdir -p "$HOME/.claude"
+mkdir -p "$HOOK_DST_DIR" "$SKILL_DST_DIR"
+cp "$HOOK_SRC" "$HOOK_DST"
+chmod +x "$HOOK_DST"
+echo "[checkpoint-codex] ✓ hook 脚本已复制到 $HOOK_DST"
+cp "$PRETOOL_SRC" "$PRETOOL_DST"
+chmod +x "$PRETOOL_DST"
+echo "[checkpoint-codex] ✓ PreToolUse 脚本已复制到 $PRETOOL_DST"
+cp "$STOP_WRAPPER_SRC" "$STOP_WRAPPER_DST"
+chmod +x "$STOP_WRAPPER_DST"
+echo "[checkpoint-codex] ✓ Stop wrapper 已复制到 $STOP_WRAPPER_DST"
+cp "$RETRIEVE_SRC" "$RETRIEVE_DST"
+chmod +x "$RETRIEVE_DST"
+echo "[checkpoint-codex] ✓ 检索 hook 已复制到 $RETRIEVE_DST"
+cp "$PRETOOL_WRAPPER_SRC" "$PRETOOL_WRAPPER_DST"
+chmod +x "$PRETOOL_WRAPPER_DST"
+echo "[checkpoint-codex] ✓ PreTool wrapper 已复制到 $PRETOOL_WRAPPER_DST"
 
-if [ "$LITE" = false ]; then
-  HOOK_FLAG="false"
-else
-  HOOK_FLAG="true"
-fi
-
-python3 - "$SETTINGS" "$HOOK_PATH" "$VAULT" "$HOOK_FLAG" <<'PY'
-import json, sys, os, shutil
-settings_path = os.path.expanduser(sys.argv[1])
-hook_path = sys.argv[2]
-vault = os.path.expanduser(sys.argv[3])
-lite = sys.argv[4] == "true" if len(sys.argv) > 4 else False
-
-try:
-    with open(settings_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-except (FileNotFoundError, json.JSONDecodeError):
-    data = {}
-
-if os.path.exists(settings_path):
-    bak = settings_path + ".bak"
-    shutil.copy2(settings_path, bak)
-    print(f"[checkpoint] 已备份原配置: {bak}")
-
-# 写入 OBSIDIAN_VAULT（覆盖旧值，保留其他 env）
-env = data.setdefault("env", {})
-env["OBSIDIAN_VAULT"] = vault
-
-# 非 Lite 模式才注册 Stop hook
-if not lite:
-    hooks = data.setdefault("hooks", {})
-    stop = hooks.setdefault("Stop", [])
-    stop[:] = [
-        e for e in stop
-        if not any("checkpoint.py" in h.get("command", "") for h in e.get("hooks", []))
-    ]
-    stop.append({"hooks": [{"type": "command", "command": f"python3 {hook_path}"}]})
-    print(f"[checkpoint] ✓ Stop hook 已注册: python3 {hook_path}")
-else:
-    print("[checkpoint]   Lite 模式，跳过 Stop hook（仅手动 /checkpoint）")
-
-# PreToolUse hook：写 Claude方案/ 文件时提醒已有文档（两模式都装）
-pretool_path = os.path.join(os.path.dirname(hook_path), "pretool.py")
-if os.path.exists(pretool_path):
-    hooks = data.setdefault("hooks", {})
-    pre = hooks.setdefault("PreToolUse", [])
-    pre[:] = [e for e in pre if not any("pretool.py" in h.get("command","") for h in e.get("hooks",[]))]
-    pre.append({"hooks": [{"type": "command", "command": f"python3 {pretool_path}"}]})
-    print(f"[checkpoint] ✓ PreToolUse hook 已注册")
-
-with open(settings_path, "w", encoding="utf-8") as f:
-    json.dump(data, f, ensure_ascii=False, indent=2)
-    f.write("\n")
-
-print(f"[checkpoint] ✓ OBSIDIAN_VAULT = {vault}")
-PY
-
-# 装 skill 到用户级（任意目录可用 /checkpoint）
-if [ "$LITE" = true ]; then
-    SKILL_SRC="$SCRIPT_DIR/.claude/skills/checkpoint-lite"
-else
-    SKILL_SRC="$SCRIPT_DIR/.claude/skills/checkpoint"
-fi
-SKILL_DST="$HOME/.claude/skills/checkpoint"
-mkdir -p "$HOME/.claude/skills"
 rm -rf "$SKILL_DST"
-cp -r "$SKILL_SRC" "$SKILL_DST"
-# SKILL.md 里的 hook 路径替换成本机实际路径
-sed -i.bak "s|~/obsidian/.claude/hooks/checkpoint.py|$HOOK_PATH|g" "$SKILL_DST/SKILL.md"
-rm -f "$SKILL_DST/SKILL.md.bak"
-echo "[checkpoint] ✓ /checkpoint skill 已装到 $SKILL_DST"
+cp -R "$SKILL_SRC" "$SKILL_DST"
+echo "[checkpoint-codex] ✓ /checkpoint skill 已装到 $SKILL_DST"
 
-# 装 synthesize skill
-SYNTH_SRC="$SCRIPT_DIR/.claude/skills/synthesize"
-SYNTH_DST="$HOME/.claude/skills/synthesize"
-if [ -d "$SYNTH_SRC" ]; then
-    rm -rf "$SYNTH_DST"
-    cp -r "$SYNTH_SRC" "$SYNTH_DST"
-    echo "[checkpoint] ✓ /synthesize skill 已装到 $SYNTH_DST"
-fi
-
-# 装 search skill
-SEARCH_SRC="$SCRIPT_DIR/.claude/skills/search"
-SEARCH_DST="$HOME/.claude/skills/search"
 if [ -d "$SEARCH_SRC" ]; then
-    rm -rf "$SEARCH_DST"
-    cp -r "$SEARCH_SRC" "$SEARCH_DST"
-    echo "[checkpoint] ✓ /search skill 已装到 $SEARCH_DST"
+  rm -rf "$SEARCH_DST"
+  cp -R "$SEARCH_SRC" "$SEARCH_DST"
+  echo "[checkpoint-codex] ✓ /search skill 已装到 $SEARCH_DST"
 fi
 
-# 若用户还没用户级 CLAUDE.md，创建带归档约定的模板
-USER_CLAUDE="$HOME/.claude/CLAUDE.md"
-if [ ! -f "$USER_CLAUDE" ]; then
-    mkdir -p "$HOME/.claude"
-    cat > "$USER_CLAUDE" <<'CLMD'
-# 全局指令
+if [ -d "$SYNTH_SRC" ]; then
+  rm -rf "$SYNTH_DST"
+  cp -R "$SYNTH_SRC" "$SYNTH_DST"
+  echo "[checkpoint-codex] ✓ /synthesize skill 已装到 $SYNTH_DST"
+fi
 
-## 回答前必须检索知识库
+if [ ! -f "$AGENTS_DST" ]; then
+  cat > "$AGENTS_DST" <<EOF
+# Codex Checkpoint Guide
 
-在回答任何技术、方案、配置、运维、开发类问题之前，必须先搜索知识库：
+## 回答前优先检索知识库
 
-1. 从用户问题中提取 1-3 个关键词
-2. `grep -l "<关键词>" $OBSIDIAN_VAULT/Claude方案/*/*.md` 找匹配文档
-3. 同时 grep 标签：`grep -l 'tags:.*<关键词>' $OBSIDIAN_VAULT/Claude方案/*/*.md`
-4. Read 最相关的 1-2 篇，已有结论直接引用，只补充新内容
-5. 读了 2 篇没找到 → 告诉用户"知识库暂无相关记录"，然后正常回答
-6. 纯闲聊/简单问答可跳过检索
+在回答技术、方案、配置、运维、开发类问题之前，优先检索：
 
-知识库位置：`$OBSIDIAN_VAULT/Claude方案/`（默认 `~/obsidian/知识库/Claude方案/`）
+1. 从用户问题提取 1-3 个关键词
+2. 先读取 \`$VAULT/长期经验总结/\` 中与当前任务相关的经验，再搜索项目总结和会话断点
+3. 优先读取最相关的 1-2 篇已有文档
+4. 已有结论直接复用，只补充新的差异
 
 ## 方案归档
 
-方案敲定后直接 Write 到 `$OBSIDIAN_VAULT/Claude方案/<项目名>/<方案标题>.md`。
-`$OBSIDIAN_VAULT` 默认为 `~/obsidian/知识库/`，可通过环境变量覆盖。
+方案敲定后，优先把文档写到：
 
-```yaml
+\`$VAULT/项目总结/<项目名>/<方案标题>.md\`
+
+建议 frontmatter：
+
+\`\`\`yaml
 ---
 date: YYYY-MM-DD
 project: 项目名
-tags: [claude/方案, <分类标签>, <关键词>]
+tags: [codex/方案, ...]
 ---
-# 标题
-## 背景  ## 方案  ## 关键决策  ## 实施步骤  ## 相关笔记
-```
+\`\`\`
 
-归档后会话断点会自动变 ✅，并链接到方案文件。
-CLMD
-    echo "[checkpoint] ✓ 已创建 $USER_CLAUDE（全局归档指令）"
+## 会话断点
+
+- Full 模式：Stop hook 自动写断点
+- Lite 模式：手动运行 checkpoint skill
+- 项目目录有真实产出时，会同步刷新项目总结和长期经验总结
+EOF
+  echo "[checkpoint-codex] ✓ 已创建全局 AGENTS 模板: $AGENTS_DST"
 else
-    echo "[checkpoint]   $USER_CLAUDE 已存在，跳过（如需归档指令请手动合并）"
+  echo "[checkpoint-codex] · 检测到已有 AGENTS.md，跳过创建"
+fi
+
+python3 - "$HOOKS_JSON" "$STOP_WRAPPER_DST" "$PRETOOL_WRAPPER_DST" "$VAULT" "$LITE" <<'PY'
+import json, sys, os
+
+hooks_path, stop_wrapper_dst, pretool_wrapper_dst, vault, lite_flag = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+lite = lite_flag.lower() == "true"
+if os.path.exists(hooks_path):
+    try:
+        with open(hooks_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        data = {}
+else:
+    data = {}
+
+hooks = data.setdefault("hooks", {})
+stop = hooks.setdefault("Stop", [])
+pre = hooks.setdefault("PreToolUse", [])
+user_prompt_submit = hooks.setdefault("UserPromptSubmit", [])
+stop[:] = [
+    entry for entry in stop
+    if not any(
+        any(token in h.get("command", "") for token in ("checkpoint.py", "codex-hook.js", "stop-wrapper.py", "probe-hook.py"))
+        for h in entry.get("hooks", [])
+    )
+]
+pre[:] = [
+    entry for entry in pre
+    if not any(
+        any(token in h.get("command", "") for token in ("pretool.py", "codex-hook.js", "pretool-wrapper.py", "probe-hook.py"))
+        for h in entry.get("hooks", [])
+    )
+]
+user_prompt_submit[:] = [
+    entry for entry in user_prompt_submit
+    if not any(
+        any(token in h.get("command", "") for token in ("checkpoint.py", "codex-hook.js", "stop-wrapper.py", "probe-hook.py"))
+        for h in entry.get("hooks", [])
+    )
+]
+if not lite:
+    stop.insert(0, {
+        "hooks": [
+            {
+                "type": "command",
+                "command": f"python3 {stop_wrapper_dst} --vault-root {vault}",
+                "timeout": 30,
+            }
+        ]
+    })
+pre.insert(0, {
+    "hooks": [
+        {
+            "type": "command",
+            "command": f"python3 {pretool_wrapper_dst} --vault-root {vault}",
+            "timeout": 30,
+        }
+    ]
+})
+if not lite:
+    user_prompt_submit.insert(0, {
+        "hooks": [
+            {
+                "type": "command",
+                "command": f"python3 {stop_wrapper_dst} --vault-root {vault}",
+                "timeout": 30,
+            }
+        ]
+    })
+
+with open(hooks_path, "w", encoding="utf-8") as f:
+    json.dump(data, f, ensure_ascii=False, indent=2)
+    f.write("\n")
+if lite:
+    print(f"[checkpoint-codex] ✓ Lite 模式已清理 Stop / UserPromptSubmit 自动写入")
+else:
+    print(f"[checkpoint-codex] ✓ Stop hook 已写入 {hooks_path}")
+print(f"[checkpoint-codex] ✓ PreToolUse hook 已写入 {hooks_path}")
+PY
+
+if [ -f "$CONFIG_TOML" ]; then
+  if rg -n '^hooks = true$' "$CONFIG_TOML" >/dev/null 2>&1; then
+    echo "[checkpoint-codex] ✓ config.toml 已开启 hooks"
+  else
+    echo "[checkpoint-codex] ⚠️ 请确认 $CONFIG_TOML 的 [features] 下已启用 hooks = true"
+  fi
+else
+  echo "[checkpoint-codex] ⚠️ 未找到 $CONFIG_TOML，请确认 Codex 已初始化"
 fi
 
 cat <<EOF
 
-[checkpoint] 安装完成（$([ "$LITE" = true ] && echo 'Lite' || echo 'Full') 模式）。
+[checkpoint-codex] 安装完成（$([ "$LITE" = true ] && echo 'Lite' || echo 'Full') 模式）。
 
-  - API / LLM：Full 模式自动调 LLM 起标题打标签；Lite 模式仅手动 /checkpoint，用对话模型生成元数据，不额外调 API。
-  - vault 路径已写入 settings.json 的 env.OBSIDIAN_VAULT，想改重跑本脚本即可。
-  $([ "$LITE" = false ] && echo '- 新开一个 claude 会话即生效（当前会话不重载 hook）。')
-  $([ "$LITE" = true ] && echo '- 仅 /checkpoint 手动生成断点，无自动 Stop hook。')
+- $([ "$LITE" = true ] && echo 'Lite 模式跳过 Stop / UserPromptSubmit 自动写入' || echo "Stop Hook 已注册到 $HOOKS_JSON")
+- PreToolUse Hook 已注册到 $HOOKS_JSON
+- vault 路径将通过 --vault-root 传给 hook
+- checkpoint.py 手动执行链路已经验证
+- search 与 synthesize 已作为本地可执行 skill 安装
+- $([ "$LITE" = true ] && echo 'checkpoint skill 已切到 Lite 版本' || echo 'checkpoint skill 使用 Full 版本')
+- 全局 AGENTS 模板：$([ -f "$AGENTS_DST" ] && echo "$AGENTS_DST" || echo '未创建')
+- slash 直调当前没有完成验证，稳定方式仍然是按 skill 调脚本
 
-卸载：删 ~/.claude/settings.json 里 hooks.Stop 中指向 checkpoint.py 的条目（或恢复 .bak）。
+当前版本仅支持 Codex：
+- 自动断点可用
+- Codex rollout 解析可用
+- 输出目录、标签和首页文件名都会使用 Codex 口径
+- search 与 synthesize 已有本地脚本实现
 EOF

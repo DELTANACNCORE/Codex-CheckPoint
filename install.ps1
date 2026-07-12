@@ -1,164 +1,228 @@
-﻿﻿﻿﻿# checkpoint 机制安装脚本 (Windows / PowerShell)
-# 把 Stop hook 注册到用户级 %USERPROFILE%\.claude\settings.json
-# 幂等：重复运行不重复注册。不动已有的 env / 其他 hook。
-$ErrorActionPreference = "Stop"
-
-# PS 5.1 默认 GBK，切 UTF-8 避免中文乱码 + 给 python 子进程设编码
-chcp 65001 > $null
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$env:PYTHONIOENCODING = "utf-8"
-
-$Lite = $args[0] -eq "--lite"
-if ($Lite) {
-    Write-Host "[checkpoint] 安装模式: Lite（仅手动 /checkpoint，不额外调 API）"
-} else {
-    Write-Host "[checkpoint] 安装模式: Full（自动 Stop hook + 手动 /checkpoint）"
-}
-
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$HookPath  = Join-Path $ScriptDir ".claude\hooks\checkpoint.py"
-$Settings  = Join-Path $env:USERPROFILE ".claude\settings.json"
-$DefaultVault = Join-Path $env:USERPROFILE "obsidian\知识库"
+$Lite = $args[0] -eq "--lite"
+$ModeText = if ($Lite) { "Lite（仅手动 /checkpoint）" } else { "Full（自动 hook + 手动 /checkpoint）" }
+Write-Host "[checkpoint-codex] 安装模式: $ModeText"
+$HookSrc = Join-Path $ScriptDir ".codex/hooks/checkpoint.py"
+$PretoolSrc = Join-Path $ScriptDir ".codex/hooks/pretool.py"
+$StopWrapperSrc = Join-Path $ScriptDir ".codex/hooks/stop-wrapper.py"
+$RetrieveSrc = Join-Path $ScriptDir ".codex/hooks/retrieve.py"
+$PretoolWrapperSrc = Join-Path $ScriptDir ".codex/hooks/pretool-wrapper.py"
+$SkillSrc = if ($Lite) { Join-Path $ScriptDir ".codex/skills/checkpoint-lite" } else { Join-Path $ScriptDir ".codex/skills/checkpoint" }
+$SearchSrc = Join-Path $ScriptDir ".codex/skills/search"
+$SynthSrc = Join-Path $ScriptDir ".codex/skills/synthesize"
+$CodexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME ".codex" }
+$HookDstDir = Join-Path $CodexHome "hooks"
+$HookDst = Join-Path $HookDstDir "checkpoint.py"
+$PretoolDst = Join-Path $HookDstDir "pretool.py"
+$StopWrapperDst = Join-Path $HookDstDir "stop-wrapper.py"
+$RetrieveDst = Join-Path $HookDstDir "retrieve.py"
+$PretoolWrapperDst = Join-Path $HookDstDir "pretool-wrapper.py"
+$SkillDstDir = Join-Path $CodexHome "skills"
+$SkillDst = Join-Path $SkillDstDir "checkpoint"
+$SearchDst = Join-Path $SkillDstDir "search"
+$SynthDst = Join-Path $SkillDstDir "synthesize"
+$AgentsDst = Join-Path $CodexHome "AGENTS.md"
+$HooksJson = Join-Path $CodexHome "hooks.json"
+$ConfigToml = Join-Path $CodexHome "config.toml"
+$DefaultVault = Join-Path $HOME "obsidian/知识库"
 
-Write-Host "[checkpoint] 仓库目录: $ScriptDir"
-Write-Host "[checkpoint] hook 脚本: $HookPath"
-
-if (-not (Test-Path $HookPath)) {
-    Write-Error "[checkpoint] 找不到 hook 脚本: $HookPath"
-    exit 1
+if (-not (Test-Path $HookSrc)) {
+  Write-Error "[checkpoint-codex] 找不到 hook 脚本: $HookSrc"
+  exit 1
+}
+if (-not (Test-Path $PretoolSrc)) {
+  Write-Error "[checkpoint-codex] 找不到 PreToolUse 脚本: $PretoolSrc"
+  exit 1
+}
+if (-not (Test-Path $StopWrapperSrc)) {
+  Write-Error "[checkpoint-codex] 找不到 Stop wrapper: $StopWrapperSrc"
+  exit 1
+}
+if (-not (Test-Path $RetrieveSrc)) {
+  Write-Error "[checkpoint-codex] 找不到检索 hook: $RetrieveSrc"
+  exit 1
+}
+if (-not (Test-Path $PretoolWrapperSrc)) {
+  Write-Error "[checkpoint-codex] 找不到 PreTool wrapper: $PretoolWrapperSrc"
+  exit 1
 }
 
-# 询问 Obsidian vault 路径
 Write-Host ""
-Write-Host "断点笔记会写到你的 Obsidian vault 下的 Claude方案/ 目录。"
 $Vault = Read-Host "你的 Obsidian vault 路径 [默认: $DefaultVault]"
-if (-not $Vault) { $Vault = $DefaultVault }
-
-$SettingsDir = Split-Path -Parent $Settings
-if (-not (Test-Path $SettingsDir)) {
-    New-Item -ItemType Directory -Path $SettingsDir | Out-Null
+if ([string]::IsNullOrWhiteSpace($Vault)) {
+  $Vault = $DefaultVault
 }
 
-# 用 python 做 JSON 合并（与 install.sh 完全一致，跨 PS 5.1/7 稳定）
-$py = @'
-import json, sys, os, shutil
-settings_path = os.path.expanduser(sys.argv[1])
-hook_path = sys.argv[2]
-vault = os.path.expanduser(sys.argv[3])
-lite = sys.argv[4] == "true" if len(sys.argv) > 4 else False
-try:
-    with open(settings_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-except (FileNotFoundError, json.JSONDecodeError):
-    data = {}
-if os.path.exists(settings_path):
-    bak = settings_path + ".bak"
-    shutil.copy2(settings_path, bak)
-    print(f"[checkpoint] 已备份原配置: {bak}")
-# 写入 OBSIDIAN_VAULT
-env = data.setdefault("env", {})
-env["OBSIDIAN_VAULT"] = vault
-# 非 Lite 模式才注册 Stop hook
-if not lite:
-    hooks = data.setdefault("hooks", {})
-    stop = hooks.setdefault("Stop", [])
-    stop[:] = [e for e in stop if not any("checkpoint.py" in h.get("command","") for h in e.get("hooks",[]))]
-    stop.append({"hooks":[{"type":"command","command":f'python "{hook_path}"'}]})
-    print(f"[checkpoint] Stop hook 已注册: python \"{hook_path}\"")
-else:
-    print("[checkpoint]   Lite 模式，跳过 Stop hook")
-# PreToolUse hook（两模式都装）
-pretool_path = os.path.join(os.path.dirname(hook_path), "pretool.py")
-if os.path.exists(pretool_path):
-    hooks = data.setdefault("hooks", {})
-    pre = hooks.setdefault("PreToolUse", [])
-    pre[:] = [e for e in pre if not any("pretool.py" in h.get("command","") for h in e.get("hooks",[]))]
-    pre.append({"hooks":[{"type":"command","command":f'python "{pretool_path}"'}]})
-    print("[checkpoint] PreToolUse hook 已注册")
-with open(settings_path, "w", encoding="utf-8") as f:
-    json.dump(data, f, ensure_ascii=False, indent=2)
-    f.write("\n")
-print(f"[checkpoint] OBSIDIAN_VAULT = {vault}")
-'@
-
-$py | python - $Settings $HookPath $Vault $(if ($Lite) { "true" } else { "false" })
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-# 装 skill 到用户级（任意目录可用 /checkpoint）
-$SkillSrc = if ($Lite) { Join-Path $ScriptDir ".claude\skills\checkpoint-lite" } else { Join-Path $ScriptDir ".claude\skills\checkpoint" }
-$SkillDst = Join-Path $env:USERPROFILE ".claude\skills\checkpoint"
-$SkillDir = Split-Path -Parent $SkillDst
-if (-not (Test-Path $SkillDir)) { New-Item -ItemType Directory -Path $SkillDir | Out-Null }
-if (Test-Path $SkillDst) { Remove-Item -Recurse -Force $SkillDst }
-Copy-Item -Recurse $SkillSrc $SkillDst
-# SKILL.md 里的 hook 路径替换成本机实际路径
-$SkillMd = Join-Path $SkillDst "SKILL.md"
-(Get-Content $SkillMd -Raw -Encoding UTF8) -replace '~/obsidian/\.claude/hooks/checkpoint\.py', $HookPath | Set-Content $SkillMd -Encoding UTF8
-Write-Host "[checkpoint] /checkpoint skill 已装到 $SkillDst"
-
-# 装 synthesize skill
-$SynthSrc = Join-Path $ScriptDir ".claude\skills\synthesize"
-$SynthDst = Join-Path $env:USERPROFILE ".claude\skills\synthesize"
-if (Test-Path $SynthSrc) {
-    if (Test-Path $SynthDst) { Remove-Item -Recurse -Force $SynthDst }
-    Copy-Item -Recurse $SynthSrc $SynthDst
-    Write-Host "[checkpoint] /synthesize skill 已装到 $SynthDst"
-# 装 search skill
-$SearchSrc = Join-Path $ScriptDir ".claude\skills\search"
-$SearchDst = Join-Path $env:USERPROFILE ".claude\skills\search"
+New-Item -ItemType Directory -Force -Path $HookDstDir | Out-Null
+New-Item -ItemType Directory -Force -Path $SkillDstDir | Out-Null
+Copy-Item $HookSrc $HookDst -Force
+Copy-Item $PretoolSrc $PretoolDst -Force
+Copy-Item $StopWrapperSrc $StopWrapperDst -Force
+Copy-Item $RetrieveSrc $RetrieveDst -Force
+Copy-Item $PretoolWrapperSrc $PretoolWrapperDst -Force
+if (Test-Path $SkillDst) {
+  Remove-Item $SkillDst -Recurse -Force
+}
+Copy-Item $SkillSrc $SkillDst -Recurse -Force
 if (Test-Path $SearchSrc) {
-    if (Test-Path $SearchDst) { Remove-Item -Recurse -Force $SearchDst }
-    Copy-Item -Recurse $SearchSrc $SearchDst
-    Write-Host "[checkpoint] /search skill 已装到 $SearchDst"
+  if (Test-Path $SearchDst) {
+    Remove-Item $SearchDst -Recurse -Force
+  }
+  Copy-Item $SearchSrc $SearchDst -Recurse -Force
 }
+if (Test-Path $SynthSrc) {
+  if (Test-Path $SynthDst) {
+    Remove-Item $SynthDst -Recurse -Force
+  }
+  Copy-Item $SynthSrc $SynthDst -Recurse -Force
 }
 
-# 若用户还没用户级 CLAUDE.md，创建带归档约定的模板
-$UserClaude = Join-Path $env:USERPROFILE ".claude\CLAUDE.md"
-if (-not (Test-Path $UserClaude)) {
-    $ClaudeDir = Split-Path -Parent $UserClaude
-    if (-not (Test-Path $ClaudeDir)) { New-Item -ItemType Directory -Path $ClaudeDir | Out-Null }
-    @'
-# 全局指令
+if (-not (Test-Path $AgentsDst)) {
+  @"
+# Codex Checkpoint Guide
 
-## 回答前必须检索知识库
+## 回答前优先检索知识库
 
-在回答任何技术、方案、配置、运维、开发类问题之前，必须先搜索知识库：
+在回答技术、方案、配置、运维、开发类问题之前，优先检索：
 
-1. 从用户问题中提取 1-3 个关键词
-2. `grep -l "<关键词>" $OBSIDIAN_VAULT/Claude方案/*/*.md` 找匹配文档
-3. 同时 grep 标签：`grep -l 'tags:.*<关键词>' $OBSIDIAN_VAULT/Claude方案/*/*.md`
-4. Read 最相关的 1-2 篇，已有结论直接引用，只补充新内容
-5. 读了 2 篇没找到 → 告诉用户"知识库暂无相关记录"，然后正常回答
-6. 纯闲聊/简单问答可跳过检索
-
-知识库位置：`$OBSIDIAN_VAULT/Claude方案/`（默认 `~/obsidian/知识库/Claude方案/`）
+1. 从用户问题提取 1-3 个关键词
+2. 先读取 `$Vault/长期经验总结/` 中与当前任务相关的经验，再搜索项目总结和会话断点
+3. 优先读取最相关的 1-2 篇已有文档
+4. 已有结论直接复用，只补充新的差异
 
 ## 方案归档
 
-方案敲定后直接 Write 到 `$OBSIDIAN_VAULT/Claude方案/<项目名>/<方案标题>.md`。
-`$OBSIDIAN_VAULT` 默认为 `~/obsidian/知识库/`，可通过环境变量覆盖。
+方案敲定后，优先把文档写到：
+
+`$Vault/项目总结/<项目名>/<方案标题>.md`
+
+建议 frontmatter：
 
 ```yaml
 ---
 date: YYYY-MM-DD
 project: 项目名
-tags: [claude/方案, <分类标签>, <关键词>]
+tags: [codex/方案, ...]
 ---
-# 标题
-## 背景  ## 方案  ## 关键决策  ## 实施步骤  ## 相关笔记
 ```
 
-归档后会话断点会自动变 ✅，并链接到方案文件。
-'@ | Set-Content $UserClaude -Encoding UTF8
-    Write-Host "[checkpoint] 已创建 $UserClaude（全局归档指令）"
+## 会话断点
+
+- Full 模式：Stop hook 自动写断点
+- Lite 模式：手动运行 checkpoint skill
+- 项目目录有真实产出时，会同步刷新项目总结和长期经验总结
+"@ | Set-Content $AgentsDst -Encoding UTF8
+  Write-Host "[checkpoint-codex] 已创建全局 AGENTS 模板: $AgentsDst"
 } else {
-    Write-Host "[checkpoint]   $UserClaude 已存在，跳过（如需归档指令请手动合并）"
+  Write-Host "[checkpoint-codex] 检测到已有 AGENTS.md，跳过创建"
 }
 
-Write-Host ""
-Write-Host "[checkpoint] 安装完成（$(if ($Lite) { 'Lite' } else { 'Full' }) 模式）。"
-Write-Host "  - API / LLM：Full 模式自动调 LLM；Lite 模式仅手动 /checkpoint，用对话模型，不额外调 API。"
-Write-Host "  - vault 路径已写入 env.OBSIDIAN_VAULT。"
-if (-not $Lite) { Write-Host "  - 新开 claude 会话即生效。" } else { Write-Host "  - 仅 /checkpoint 手动生成断点，无自动 Stop hook。" }
-Write-Host "[checkpoint] 卸载: 删 settings.json 里 hooks.Stop 中指向 checkpoint.py 的条目，或恢复 .bak。"
+$data = @{}
+if (Test-Path $HooksJson) {
+  try {
+    $data = Get-Content $HooksJson -Raw | ConvertFrom-Json -AsHashtable
+  } catch {
+    $data = @{}
+  }
+}
+if (-not $data.ContainsKey("hooks")) {
+  $data["hooks"] = @{}
+}
+$data["hooks"]["Stop"] = if ($data["hooks"].ContainsKey("Stop")) { $data["hooks"]["Stop"] } else { @() }
+$data["hooks"]["PreToolUse"] = if ($data["hooks"].ContainsKey("PreToolUse")) { $data["hooks"]["PreToolUse"] } else { @() }
+$data["hooks"]["UserPromptSubmit"] = if ($data["hooks"].ContainsKey("UserPromptSubmit")) { $data["hooks"]["UserPromptSubmit"] } else { @() }
+$filtered = @()
+foreach ($entry in $data["hooks"]["Stop"]) {
+  $keep = $true
+  foreach ($hook in $entry.hooks) {
+    if ($hook.command -like "*checkpoint.py*" -or $hook.command -like "*codex-hook.js*" -or $hook.command -like "*stop-wrapper.py*" -or $hook.command -like "*probe-hook.py*") {
+      $keep = $false
+    }
+  }
+  if ($keep) {
+    $filtered += $entry
+  }
+}
+if (-not $Lite) {
+  $filtered += @{
+    hooks = @(
+      @{
+        type = "command"
+        command = "python3 $StopWrapperDst --vault-root $Vault"
+        timeout = 30
+      }
+    )
+  }
+}
+$data["hooks"]["Stop"] = $filtered
+$preFiltered = @()
+foreach ($entry in $data["hooks"]["PreToolUse"]) {
+  $keep = $true
+  foreach ($hook in $entry.hooks) {
+    if ($hook.command -like "*pretool.py*" -or $hook.command -like "*codex-hook.js*" -or $hook.command -like "*pretool-wrapper.py*" -or $hook.command -like "*probe-hook.py*") {
+      $keep = $false
+    }
+  }
+  if ($keep) {
+    $preFiltered += $entry
+  }
+}
+$preFiltered += @{
+  hooks = @(
+    @{
+      type = "command"
+      command = "python3 $PretoolWrapperDst --vault-root $Vault"
+      timeout = 30
+    }
+  )
+}
+$data["hooks"]["PreToolUse"] = $preFiltered
+$upsFiltered = @()
+foreach ($entry in $data["hooks"]["UserPromptSubmit"]) {
+  $keep = $true
+  foreach ($hook in $entry.hooks) {
+    if ($hook.command -like "*checkpoint.py*" -or $hook.command -like "*codex-hook.js*" -or $hook.command -like "*stop-wrapper.py*" -or $hook.command -like "*probe-hook.py*") {
+      $keep = $false
+    }
+  }
+  if ($keep) {
+    $upsFiltered += $entry
+  }
+}
+$upsFiltered = if ($Lite) {
+  $upsFiltered
+} else {
+  @(
+    @{
+      hooks = @(
+        @{
+          type = "command"
+          command = "python3 $StopWrapperDst --vault-root $Vault"
+          timeout = 30
+        }
+      )
+    }
+  ) + $upsFiltered
+}
+$data["hooks"]["UserPromptSubmit"] = $upsFiltered
+$data | ConvertTo-Json -Depth 10 | Set-Content -Encoding UTF8 $HooksJson
+
+Write-Host "[checkpoint-codex] 安装完成"
+if ($Lite) {
+  Write-Host "[checkpoint-codex] Lite 模式已清理 Stop / UserPromptSubmit 自动写入"
+} else {
+  Write-Host "[checkpoint-codex] Stop hook 已写入 $HooksJson"
+}
+Write-Host "[checkpoint-codex] PreToolUse hook 已写入 $HooksJson"
+Write-Host "[checkpoint-codex] /checkpoint skill 已装到 $SkillDst"
+if (Test-Path $SearchSrc) {
+  Write-Host "[checkpoint-codex] search 可执行 skill 已装到 $SearchDst"
+}
+if (Test-Path $SynthSrc) {
+  Write-Host "[checkpoint-codex] synthesize 可执行 skill 已装到 $SynthDst"
+}
+Write-Host "[checkpoint-codex] checkpoint.py 手动执行链路已经验证"
+Write-Host "[checkpoint-codex] checkpoint skill 已切到 $(if ($Lite) { 'Lite' } else { 'Full' }) 版本"
+Write-Host "[checkpoint-codex] 全局 AGENTS 模板: $AgentsDst"
+Write-Host "[checkpoint-codex] slash 直调当前没有完成验证，稳定方式仍然是按 skill 调脚本"
+Write-Host "[checkpoint-codex] 当前版本仅支持 Codex，本地解析 rollout，不调用第三方模型服务"

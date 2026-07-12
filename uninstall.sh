@@ -1,81 +1,79 @@
 #!/usr/bin/env bash
-# checkpoint 卸载脚本
-# 清理 Stop/PreToolUse hook、skill、env 配置
 set -euo pipefail
 
-SETTINGS="$HOME/.claude/settings.json"
-SKILLS_DIR="$HOME/.claude/skills"
+CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
+HOOKS_JSON="$CODEX_HOME/hooks.json"
+SKILLS_DIR="$CODEX_HOME/skills"
+AGENTS_DST="$CODEX_HOME/AGENTS.md"
 
-echo "[checkpoint] 正在卸载..."
+echo "[checkpoint-codex] 正在卸载..."
 
-if [ ! -f "$SETTINGS" ]; then
-    echo "[checkpoint] $SETTINGS 不存在，无需卸载"
-else
-    python3 - "$SETTINGS" <<'PY'
-import json, sys, os
-sp = os.path.expanduser(sys.argv[1])
+if [ -f "$HOOKS_JSON" ]; then
+  python3 - "$HOOKS_JSON" <<'PY'
+import json, sys
+hooks_path = sys.argv[1]
 try:
-    with open(sp, "r") as f: data = json.load(f)
+    with open(hooks_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
 except (FileNotFoundError, json.JSONDecodeError):
-    print("[checkpoint] 配置文件不存在或无效，跳过")
+    print("[checkpoint-codex] hooks.json 不存在或无效，跳过")
     sys.exit(0)
 
-cleaned = False
-for hook_type in ("Stop", "PreToolUse"):
-    hooks = data.get("hooks", {}).get(hook_type, [])
-    if not hooks: continue
-    before = len(hooks)
-    hooks[:] = [e for e in hooks if not any(
-        "checkpoint.py" in h.get("command", "") or "pretool.py" in h.get("command", "")
-        for h in e.get("hooks", [])
-    )]
-    after = len(hooks)
-    if after < before:
-        cleaned = True
-        print(f"[checkpoint] 已清理 hooks.{hook_type}: {before}→{after}")
-    if not hooks:
-        data["hooks"].pop(hook_type, None)
+hooks = data.get("hooks", {})
+targets = {
+    "Stop": ("checkpoint.py", "stop-wrapper.py", "probe-hook.py"),
+    "UserPromptSubmit": ("checkpoint.py", "stop-wrapper.py", "probe-hook.py"),
+    "PreToolUse": ("pretool.py", "pretool-wrapper.py", "probe-hook.py"),
+}
+changed = False
+for hook_name, tokens in targets.items():
+    entries = hooks.get(hook_name, [])
+    if not entries:
+        continue
+    before = len(entries)
+    entries[:] = [
+        entry for entry in entries
+        if not any(any(token in h.get("command", "") for token in tokens) for h in entry.get("hooks", []))
+    ]
+    after = len(entries)
+    if after != before:
+        changed = True
+        print(f"[checkpoint-codex] 已清理 hooks.{hook_name}: {before}->{after}")
+    if not entries:
+        hooks.pop(hook_name, None)
 
-# 可选移除 OBSIDIAN_VAULT（如果同 checkpoint 同批安装的）
-env = data.get("env", {})
-vault = env.pop("OBSIDIAN_VAULT", None)
-if vault:
-    cleaned = True
-    print(f"[checkpoint] 已移除 env.OBSIDIAN_VAULT ({vault})")
-if not env:
-    data.pop("env", None)
-if not data.get("hooks"):
-    data.pop("hooks", None)
-
-if cleaned:
-    with open(sp, "w", encoding="utf-8") as f:
+if changed:
+    with open(hooks_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
         f.write("\n")
-    print(f"[checkpoint] 配置已更新: {sp}")
+    print(f"[checkpoint-codex] hooks.json 已更新: {hooks_path}")
 else:
-    print("[checkpoint] 未找到 checkpoint 相关配置")
+    print("[checkpoint-codex] 未找到需要清理的 hook")
 PY
 fi
 
-# 清理 skills
-for skill in checkpoint synthesize search; do
-    D="$SKILLS_DIR/$skill"
-    if [ -d "$D" ]; then
-        rm -rf "$D"
-        echo "[checkpoint] 已删除 skill: $D"
-    fi
+for skill in checkpoint search synthesize; do
+  if [ -d "$SKILLS_DIR/$skill" ]; then
+    rm -rf "$SKILLS_DIR/$skill"
+    echo "[checkpoint-codex] 已删除 skill: $SKILLS_DIR/$skill"
+  fi
 done
 
-# 清理 bak（如果存在）
-BAK="$SETTINGS.bak"
-if [ -f "$BAK" ]; then
-    rm -f "$BAK"
-    echo "[checkpoint] 已删除备份: $BAK"
+for hook in checkpoint.py pretool.py stop-wrapper.py pretool-wrapper.py retrieve.py; do
+  if [ -f "$CODEX_HOME/hooks/$hook" ]; then
+    rm -f "$CODEX_HOME/hooks/$hook"
+    echo "[checkpoint-codex] 已删除 hook: $CODEX_HOME/hooks/$hook"
+  fi
+done
+
+if [ -f "$AGENTS_DST" ] && rg -n "^# Codex Checkpoint Guide$" "$AGENTS_DST" >/dev/null 2>&1; then
+  rm -f "$AGENTS_DST"
+  echo "[checkpoint-codex] 已删除自动生成的 AGENTS 模板: $AGENTS_DST"
 fi
 
 cat <<EOF
 
-[checkpoint] 卸载完成。
-
-  - 断点笔记和每日索引仍保留在 vault 里（如需删除，手动删除 Claude方案/会话断点/ 和 Claude方案/会话索引/）。
+[checkpoint-codex] 卸载完成。
+- 你的 Obsidian 笔记仍然保留在 vault 里
+- 如需继续使用，重新运行 install.sh 即可
 EOF

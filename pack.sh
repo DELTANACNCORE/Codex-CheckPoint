@@ -1,47 +1,49 @@
 #!/usr/bin/env bash
-# checkpoint 知识库打包脚本（旧电脑运行）
 set -euo pipefail
 
-SETTINGS="$HOME/.claude/settings.json"
-# 优先用环境变量，其次读安装时存的 OBSIDIAN_VAULT（跟 checkpoint.py 一致）
+CONFIG="$HOME/.codex/config.toml"
 VAULT="${OBSIDIAN_VAULT:-}"
-if [ -z "$VAULT" ] && [ -f "$SETTINGS" ] && command -v python3 &>/dev/null; then
-    VAULT=$(python3 -c "
-import json,os
+
+if [ -z "$VAULT" ] && [ -f "$CONFIG" ] && command -v python3 >/dev/null 2>&1; then
+  VAULT=$(python3 - <<'PY'
+from pathlib import Path
+import re
+cfg = Path.home() / ".codex" / "hooks.json"
 try:
-    d=json.load(open(os.path.expanduser('$SETTINGS')))
-    v=d.get('env',{}).get('OBSIDIAN_VAULT','')
+    text = cfg.read_text(encoding="utf-8")
+except Exception:
+    text = ""
+m = re.search(r'--vault-root\s+([^\"]\S*|\"[^\"]+\")', text)
+if m:
+    v = m.group(1).strip('"')
     print(v)
-except: pass
-" 2>/dev/null)
+PY
+)
 fi
 
 if [ -z "${VAULT:-}" ]; then
-    echo "知识库在哪个目录？"
-    read -r -p "Obsidian vault 路径 [默认: $HOME/obsidian/知识库]: " VAULT
-    VAULT="${VAULT:-$HOME/obsidian/知识库}"
+  read -r -p "Obsidian vault 路径 [默认: $HOME/obsidian/知识库]: " VAULT
+  VAULT="${VAULT:-$HOME/obsidian/知识库}"
 fi
 VAULT="${VAULT/#~/$HOME}"
 
-PLANS="$VAULT/Claude方案"
-DASH="$VAULT/_知识库首页.md"
-PROJECTS="$HOME/.claude/projects"
-OUT="checkpoint-migrate-$(date +%Y%m%d-%H%M).tar.gz"
+SESSIONS="$HOME/.codex/sessions"
+OUT="checkpoint-codex-migrate-$(date +%Y%m%d-%H%M%S).tar.gz"
 
-echo "[pack] vault: $VAULT"
+echo "[pack-codex] vault: $VAULT"
 
-if [ ! -d "$PLANS" ]; then
-    echo "[pack] Claude方案/ 不存在，目录不对？"
-    exit 1
+if [ ! -d "$VAULT/Codex工作记录" ]; then
+  echo "[pack-codex] Codex工作记录/ 不存在，目录不对？"
+  exit 1
 fi
 
-# 首页如果在 vault 根也打进去
-[ -f "$DASH" ] && cp "$DASH" "$PLANS/" 2>/dev/null || true
+items=(Codex工作记录)
+for item in 项目总结 长期经验总结 知识库首页.md Codex协同Obsidian工作流skill更新日志.md; do
+  [ -e "$VAULT/$item" ] && items+=("$item")
+done
 
-tar -czf "$OUT" -C "$VAULT" Claude方案 -C "$HOME" .claude/projects
-
-[ -f "$PLANS/_知识库首页.md" ] && rm "$PLANS/_知识库首页.md" 2>/dev/null || true
+tar -czf "$OUT" -C "$VAULT" "${items[@]}" -C "$HOME" .codex/sessions
 
 SIZE=$(du -h "$OUT" | cut -f1)
-echo "[pack] → $OUT ($SIZE)"
-echo "[pack] 传到新电脑后跑 unpack.sh"
+echo "[pack-codex] -> $OUT ($SIZE)"
+echo "[pack-codex] 传到新电脑后运行 unpack.sh"
