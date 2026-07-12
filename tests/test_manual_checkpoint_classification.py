@@ -54,6 +54,18 @@ def append_user_response(path: Path, text: str) -> None:
         handle.write(json.dumps(response("user", text), ensure_ascii=False) + "\n")
 
 
+def append_project_summary_write(rollout: Path, summary_path: Path) -> None:
+    entry = {
+        "type": "custom_tool_call",
+        "payload": {
+            "name": "apply_patch",
+            "input": f"*** Begin Patch\n*** Update File: {summary_path}\n*** End Patch",
+        },
+    }
+    with rollout.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
 class ManualCheckpointClassificationTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -124,6 +136,22 @@ class ManualCheckpointClassificationTest(unittest.TestCase):
             if f'session_id: "{session_id}"' in path.read_text(encoding="utf-8"):
                 return path
         self.fail(f"missing checkpoint for {session_id}")
+
+    def write_project_summary(self, project: str, session_id: str, merged: bool = False) -> Path:
+        path = self.vault / "项目总结" / f"{project}.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        merged_line = f'merged_projects: ["{project}"]\n' if merged else ""
+        path.write_text(
+            f"""---
+project: {project}
+session_ids: ["{session_id}"]
+{merged_line}---
+
+# {project} 项目总结
+""",
+            encoding="utf-8",
+        )
+        return path
 
     def test_manual_checkpoint_classifies_all_saved_sessions(self) -> None:
         docker_result = self.run_hook(self.docker_rollout, DOCKER_SESSION)
@@ -322,6 +350,23 @@ class ManualCheckpointClassificationTest(unittest.TestCase):
         note_text = self.note_for_session(session_id).read_text(encoding="utf-8")
         self.assertIn('status: "completed"', note_text)
         self.assertNotIn("knowledge_archived: true", note_text)
+
+    def test_historical_project_summary_writes_do_not_create_a_merge(self) -> None:
+        session_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+        rollout = self.sessions / f"rollout-2026-07-13T09-50-00-{session_id}.jsonl"
+        write_rollout(rollout, "修复项目总结归属", "当前项目总结归属已经完成验证。")
+        trusted = self.write_project_summary("可信项目", session_id)
+        stale_merge = self.write_project_summary("历史合并项目", session_id, merged=True)
+        deleted = self.vault / "项目总结" / "已删除项目.md"
+        append_project_summary_write(rollout, trusted)
+        append_project_summary_write(rollout, stale_merge)
+        append_project_summary_write(rollout, deleted)
+
+        result = self.run_hook(rollout, session_id)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        note_text = self.note_for_session(session_id).read_text(encoding="utf-8")
+        self.assertIn('projects: ["可信项目"]', note_text)
+        self.assertFalse((self.vault / "项目总结" / "可信项目、历史合并项目、已删除项目.md").exists())
 
     def test_mismatched_hook_session_and_invalid_vault_are_skipped(self) -> None:
         mismatched_result = subprocess.run(

@@ -254,6 +254,36 @@ def _project_summary_path(project: str) -> Path:
     return PROJECTS_DIR / f"{sanitize_filename(project)}.md"
 
 
+def _trusted_session_projects(projects, session_id: str, project_root: Path) -> set[str]:
+    """仅保留仍存在且已绑定当前 session 的单项目总结，避免历史写入反向制造项目归属。"""
+    if not session_id:
+        return set()
+    trusted = set()
+    for raw_project in projects or []:
+        project = str(raw_project or "").strip()
+        if not project:
+            continue
+        safe_project = sanitize_filename(project)
+        candidates = (
+            project_root / f"{safe_project}.md",
+            project_root / safe_project / PROJECT_SUMMARY_NAME,
+        )
+        for summary_path in candidates:
+            try:
+                text = summary_path.read_text(encoding="utf-8")
+            except (FileNotFoundError, OSError):
+                continue
+            if re.search(r"^merged_projects:\s*", text, re.MULTILINE):
+                continue
+            declared = re.search(r'^project:\s*"?([^"\n]+)"?$', text, re.MULTILINE)
+            if not declared or declared.group(1).strip() != project:
+                continue
+            if session_id in read_frontmatter_list(summary_path, "session_ids"):
+                trusted.add(project)
+                break
+    return trusted
+
+
 def _extract_paths_from_apply_patch(patch_text: str) -> list:
     paths = []
     for line in (patch_text or "").splitlines():
@@ -731,6 +761,14 @@ def extract_session_context(transcript_path: str) -> dict:
                     result["projects"].add(rel.parent.as_posix())
             except Exception:
                 pass
+
+        # rollout 会永久保留曾经写入或删除过的项目总结路径。只有现存的单项目
+        # 总结明确记录当前 session 时，该路径才能代表项目归属。
+        result["projects"] = _trusted_session_projects(
+            result["projects"],
+            _session_id_from_transcript_path(transcript_path),
+            project_root,
+        )
 
         inferred_topic = infer_session_topic(real_prompts, result["projects"])
         if inferred_topic:
