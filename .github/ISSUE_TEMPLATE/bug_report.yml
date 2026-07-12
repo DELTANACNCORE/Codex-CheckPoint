@@ -1,0 +1,51 @@
+name: Bug report
+description: Report a reproducible problem in the Codex checkpoint workflow.
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include rollout files, vault content, tokens, or personal paths.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: The release, branch, or commit where the problem occurred.
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Install or uninstall
+        - Hook
+        - Checkpoint skill
+        - Search or synthesize skill
+        - Obsidian output
+        - Documentation
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Actual behavior
+      description: Describe the result and include redacted error output when useful.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. Run ...
+        2. Start a Codex task ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
