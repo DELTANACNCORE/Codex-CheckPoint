@@ -44,6 +44,8 @@ LOW_SIGNAL_TITLE_PATTERNS = (
     r"\btrust\b",
     r"\bbypass\b",
 )
+LONG_SESSION_MIN_PROMPTS = 20
+LONG_SESSION_MIN_CHARS = 12000
 
 
 def parse_args():
@@ -327,6 +329,9 @@ def select_records(records: list[dict], args, plans_dir: Path) -> tuple[str, lis
         strong_docs = [record for record in selected if record["kind"] == "doc"]
         strong_notes = [record for record in selected if record["kind"] == "session" and not is_low_signal_session(record)]
         evidence_notes = [record for record in selected if record["kind"] == "session" and is_verification_session(record)]
+        # 单条短会话仍需要生成项目总结；只是在后续长度判断中不会建议长期经验。
+        if not strong_docs and not strong_notes:
+            strong_notes = [record for record in selected if record["kind"] == "session"][: args.limit]
 
         ordered = dedupe_records(strong_docs + strong_notes[: args.limit] + evidence_notes[:3])
         tags = dedupe_texts(["codex/方案", project, "知识合成"])
@@ -540,6 +545,51 @@ def prompt_count(text: str) -> int:
     return int(matched.group(1)) if matched else 0
 
 
+def session_length_metrics(records: list[dict]) -> dict:
+    sessions = [record for record in records if record["kind"] == "session"]
+    prompts = sum(prompt_count(record["text"]) for record in sessions)
+    chars = sum(len(record["text"]) for record in sessions)
+    is_long = prompts >= LONG_SESSION_MIN_PROMPTS or chars >= LONG_SESSION_MIN_CHARS
+    return {"sessions": len(sessions), "prompts": prompts, "chars": chars, "is_long": is_long}
+
+
+def write_long_term_experience(args, vault_root: Path, project: str, selected: list[dict]) -> bool:
+    """只有用户显式授权时才写入长期经验；项目总结已在调用前完成。"""
+    signals, quality = long_term_quality(selected)
+    print("长期经验质量评估：" + ("、".join(signals) if signals else "未发现有效核心材料"))
+    print(f"材料数：{quality['records']}；有效类别：{quality['signals']}。")
+    if not args.user_approved:
+        print("项目总结已归档。长期经验仍需用户明确授权，当前未写入。")
+        return False
+    if quality["signals"] < 3:
+        print("材料类别不足三类，依据用户强制授权继续写入长期经验。")
+    experience_dir = vault_root / "长期经验总结"
+    target_path = experience_dir / f"{safe_filename(project)}.md"
+    if target_path.exists() and not args.replace_approved:
+        print(f"已有长期经验：{target_path}。覆盖前需要用户明确授权，并加入 --replace-approved。")
+        return False
+    experience_dir.mkdir(parents=True, exist_ok=True)
+    selected_session_ids = []
+    for record in selected:
+        if record["kind"] == "session" and record.get("session_id"):
+            selected_session_ids.append(record["session_id"])
+        selected_session_ids.extend(record.get("session_ids", []))
+    frontmatter = (
+        "---\n"
+        f"date: {datetime.now(VAULT_TIMEZONE).strftime('%Y-%m-%d')}\n"
+        f"project: {project}\n"
+        "long_term_experience: true\n"
+        "user_authorized: true\n"
+        f"session_ids: {json.dumps(dedupe_texts(selected_session_ids), ensure_ascii=False)}\n"
+        f"tags: {json.dumps(dedupe_texts(['长期经验总结', '核心知识', project]), ensure_ascii=False)}\n"
+        "---\n\n"
+    )
+    title = args.title or f"{project} 长期经验总结"
+    target_path.write_text(frontmatter + synthesize_long_term_body(project, title, selected), encoding="utf-8")
+    print(f"长期经验路径: {target_path}")
+    return True
+
+
 def mark_source_sessions_archived(records: list[dict], target_path: Path, vault_root: Path) -> list[Path]:
     """把本次真实参与知识合成的断点改为已归档，并保留归档快照。"""
     try:
@@ -620,44 +670,6 @@ def main():
         print("没有找到可合成的断点。")
         sys.exit(1)
 
-    if args.long_term:
-        signals, quality = long_term_quality(selected)
-        print("长期经验质量评估：" + ("、".join(signals) if signals else "未发现有效核心材料"))
-        print(f"材料数：{quality['records']}；有效类别：{quality['signals']}。")
-        if quality["signals"] < 3 and not args.user_approved:
-            print("材料不足以自动提炼。请先询问用户是否仍必须总结；获得明确授权后才可加入 --user-approved。")
-            sys.exit(2)
-        if not args.user_approved:
-            print("长期经验只能在用户明确授权后写入。获得授权后加入 --user-approved。")
-            sys.exit(2)
-        experience_dir = vault_root / "长期经验总结"
-        target_path = experience_dir / f"{safe_filename(project)}.md"
-        if target_path.exists() and not args.replace_approved:
-            print(f"已有长期经验：{target_path}。覆盖前需要用户明确授权，并加入 --replace-approved。")
-            sys.exit(2)
-        experience_dir.mkdir(parents=True, exist_ok=True)
-        selected_session_ids = []
-        for record in selected:
-            if record["kind"] == "session" and record.get("session_id"):
-                selected_session_ids.append(record["session_id"])
-            selected_session_ids.extend(record.get("session_ids", []))
-        frontmatter = (
-            "---\n"
-            f"date: {datetime.now(VAULT_TIMEZONE).strftime('%Y-%m-%d')}\n"
-            f"project: {project}\n"
-            "long_term_experience: true\n"
-            "user_authorized: true\n"
-            f"session_ids: {json.dumps(dedupe_texts(selected_session_ids), ensure_ascii=False)}\n"
-            f"tags: {json.dumps(dedupe_texts(['长期经验总结', '核心知识', project]), ensure_ascii=False)}\n"
-            "---\n\n"
-        )
-        title = args.title or f"{project} 长期经验总结"
-        target_path.write_text(frontmatter + synthesize_long_term_body(project, title, selected), encoding="utf-8")
-        refresh_dashboard(vault_root)
-        print(f"长期经验路径: {target_path}")
-        print("本次未改写会话归档状态。")
-        return
-
     title = args.title or (f"{project} 知识整理" if project else "Codex 知识整理")
     # 默认只更新一个独立项目摘要；目录仅服务于已确认的父项目。
     target_path = projects_dir / f"{safe_filename(project)}.md"
@@ -673,6 +685,8 @@ def main():
         "---\n"
         f"date: {datetime.now(VAULT_TIMEZONE).strftime('%Y-%m-%d')}\n"
         f"project: {project}\n"
+        "knowledge_archived: true\n"
+        "archive_status: \"archived\"\n"
         f"session_ids: {json.dumps(session_ids, ensure_ascii=False)}\n"
         f"tags: {json.dumps(tags, ensure_ascii=False)}\n"
         "---\n\n"
@@ -686,6 +700,15 @@ def main():
     print(f"覆盖会话数: {len(selected)}")
     print(f"已归档断点数: {len(archived_paths)}")
     print(f"主要结论: 已从 {len(selected)} 条材料中整理出更高信噪比的知识文档。")
+    metrics = session_length_metrics(selected)
+    print(f"会话长度：{metrics['sessions']} 个会话，{metrics['prompts']} 条用户消息，{metrics['chars']} 个字符。")
+    if args.long_term:
+        write_long_term_experience(args, vault_root, project, selected)
+        refresh_dashboard(vault_root)
+    elif metrics["is_long"]:
+        print("检测到长会话。项目总结已归档；请先询问用户是否需要提炼长期经验，未获得明确授权不得写入。")
+    else:
+        print("会话长度不足以建议长期经验。项目总结已归档，未写入长期经验；用户仍可明确要求强制提炼。")
 
 
 if __name__ == "__main__":

@@ -6,6 +6,8 @@ When the user asks to archive a task under an existing project or parent project
 
 When projects do not have a confirmed parent-child relationship, merge their current-session summary into one flat project note and preserve every participating session identifier in the `session_ids` frontmatter field. Do not infer the hierarchy from names, folders, tags, or previous summaries.
 
+The `synthesize` skill always writes `项目总结/<项目名>.md` and marks its source sessions and project summary as knowledge-archived. It measures the selected sessions by recorded user-message count and material length. A long session requires a user question before any long-term experience is written; a short session must state that no long-term experience was written and that the project summary was archived. The user may explicitly force long-term extraction.
+
 Long-term experience is user-controlled core knowledge. Create or replace `长期经验总结/<项目名>.md` only through the `synthesize` skill after the user explicitly authorizes it. Before writing, assess whether the material contains at least three independently useful categories among verified conclusions, code or configuration, executable commands, operating methods, validation evidence, and pitfalls. When the material is insufficient, ask whether the user still requires the summary; do not write it without the answer. Existing long-term experience must never be deleted, replaced, or downgraded by automatic hooks. Keep one file per project and do not create indexes or subdirectories.
 
 When a relevant long-term experience document is reused in a new task or another project, tell the user at the beginning of the reply which document is being reused. The document can then be used as compact context.
