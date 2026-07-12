@@ -55,6 +55,9 @@ def parse_args():
     parser.add_argument("--title")
     parser.add_argument("--vault-root", default=str(Path("~/obsidian/知识库").expanduser()))
     parser.add_argument("--limit", type=int, default=6)
+    parser.add_argument("--long-term", action="store_true", help="评估或写入用户授权的长期经验总结")
+    parser.add_argument("--user-approved", action="store_true", help="确认用户明确授权写入长期经验")
+    parser.add_argument("--replace-approved", action="store_true", help="确认用户明确授权覆盖已有长期经验")
     return parser.parse_args()
 
 
@@ -464,6 +467,62 @@ def synthesize_body(project: str, title: str, records: list[dict]) -> str:
     )
 
 
+def long_term_quality(records: list[dict]) -> tuple[list[str], dict]:
+    """长期经验必须包含可验证的多类核心材料，不能由空泛总结构成。"""
+    joined = "\n".join(record["text"] for record in records)
+    signals = []
+    if re.search(r"```[^\n]*\n[\s\S]+?```", joined):
+        signals.append("经典代码或配置")
+    if re.search(r"(?:^|\n)\s*(?:python3?|git|docker|curl|npm|pip|ssh|cd|rg|sed)\b", joined, re.IGNORECASE):
+        signals.append("可执行指令")
+    if collect_actions(records):
+        signals.append("操作方法")
+    if collect_verified(records):
+        signals.append("验证证据")
+    if collect_gaps(records):
+        signals.append("风险或避坑")
+    return dedupe_texts(signals), {"records": len(records), "signals": len(dedupe_texts(signals))}
+
+
+def collect_code_blocks(records: list[dict]) -> list[str]:
+    blocks = []
+    for record in records:
+        for block in re.findall(r"```[^\n]*\n([\s\S]*?)```", record["text"]):
+            cleaned = block.strip()
+            if cleaned:
+                blocks.append(cleaned[:900])
+    return dedupe_texts(blocks, 4)
+
+
+def collect_commands(records: list[dict]) -> list[str]:
+    commands = []
+    for block in collect_code_blocks(records):
+        for line in block.splitlines():
+            command = line.strip()
+            if re.match(r"(?:python3?|git|docker|curl|npm|pip|ssh|cd|rg|sed)\b", command):
+                commands.append(command)
+    return dedupe_texts(commands, 12)
+
+
+def synthesize_long_term_body(project: str, title: str, records: list[dict]) -> str:
+    code_blocks = collect_code_blocks(records)
+    commands = collect_commands(records)
+    conclusions = collect_verified(records) or collect_background(records)
+    operations = collect_actions(records)
+    pitfalls = collect_gaps(records)
+    sources = dedupe_texts([f"- [[{record['path'].stem}]]" for record in records], 12)
+    return (
+        f"# {title}\n\n"
+        "## 核心结论\n\n" + "\n".join(conclusions or ["- 待补充：来源材料未提供可验证的核心结论。"]) + "\n\n"
+        "## 经典代码与配置\n\n" + ("\n\n".join(f"```text\n{block}\n```" for block in code_blocks) if code_blocks else "待补充：没有可复用的代码或配置。") + "\n\n"
+        "## 常用指令\n\n" + ("\n".join(f"- `{command}`" for command in commands) if commands else "待补充：没有可复用的指令。") + "\n\n"
+        "## 操作方法\n\n" + "\n".join(operations or ["- 待补充：没有可复用的操作方法。"]) + "\n\n"
+        "## 完成路径\n\n" + "\n".join(f"{index}. {item.lstrip('- ').strip()}" for index, item in enumerate(operations, 1)) + "\n\n"
+        "## 避坑清单\n\n" + "\n".join(pitfalls or ["- 待补充：没有已验证的风险或避坑记录。"]) + "\n\n"
+        "## 来源\n\n" + "\n".join(sources) + "\n"
+    )
+
+
 def safe_filename(name: str) -> str:
     return re.sub(r'[\\/:*?"<>|]+', "_", name).strip()[:120] or "知识整理"
 
@@ -560,6 +619,44 @@ def main():
     if len(selected) < 1:
         print("没有找到可合成的断点。")
         sys.exit(1)
+
+    if args.long_term:
+        signals, quality = long_term_quality(selected)
+        print("长期经验质量评估：" + ("、".join(signals) if signals else "未发现有效核心材料"))
+        print(f"材料数：{quality['records']}；有效类别：{quality['signals']}。")
+        if quality["signals"] < 3 and not args.user_approved:
+            print("材料不足以自动提炼。请先询问用户是否仍必须总结；获得明确授权后才可加入 --user-approved。")
+            sys.exit(2)
+        if not args.user_approved:
+            print("长期经验只能在用户明确授权后写入。获得授权后加入 --user-approved。")
+            sys.exit(2)
+        experience_dir = vault_root / "长期经验总结"
+        target_path = experience_dir / f"{safe_filename(project)}.md"
+        if target_path.exists() and not args.replace_approved:
+            print(f"已有长期经验：{target_path}。覆盖前需要用户明确授权，并加入 --replace-approved。")
+            sys.exit(2)
+        experience_dir.mkdir(parents=True, exist_ok=True)
+        selected_session_ids = []
+        for record in selected:
+            if record["kind"] == "session" and record.get("session_id"):
+                selected_session_ids.append(record["session_id"])
+            selected_session_ids.extend(record.get("session_ids", []))
+        frontmatter = (
+            "---\n"
+            f"date: {datetime.now(VAULT_TIMEZONE).strftime('%Y-%m-%d')}\n"
+            f"project: {project}\n"
+            "long_term_experience: true\n"
+            "user_authorized: true\n"
+            f"session_ids: {json.dumps(dedupe_texts(selected_session_ids), ensure_ascii=False)}\n"
+            f"tags: {json.dumps(dedupe_texts(['长期经验总结', '核心知识', project]), ensure_ascii=False)}\n"
+            "---\n\n"
+        )
+        title = args.title or f"{project} 长期经验总结"
+        target_path.write_text(frontmatter + synthesize_long_term_body(project, title, selected), encoding="utf-8")
+        refresh_dashboard(vault_root)
+        print(f"长期经验路径: {target_path}")
+        print("本次未改写会话归档状态。")
+        return
 
     title = args.title or (f"{project} 知识整理" if project else "Codex 知识整理")
     # 默认只更新一个独立项目摘要；目录仅服务于已确认的父项目。

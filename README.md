@@ -1,4 +1,4 @@
-# Codex CheckPoint V0.5.4 / Codex 会话断点 V0.5.4
+# Codex CheckPoint V0.5.5 / Codex 会话断点 V0.5.5
 
 为 Codex 与 Obsidian 提供会话断点、持续恢复、项目总结和知识检索。仓库只包含运行时 hook、skills、README、许可证和忽略规则，不包含安装、迁移、打包或解包脚本。
 
@@ -14,9 +14,9 @@ This project is based on [hjm4839-coder/checkpoint](https://github.com/hjm4839-c
 
 - 自动断点：会话结束时按日期写入 `Codex工作记录/会话断点/YYYY/MM/DD/`。 Automatic checkpoints: sessions are written by date under `Codex工作记录/会话断点/YYYY/MM/DD/`.
 - 持续更新：有效对话达到阈值后，在新用户消息时刷新断点。 Continuous updates: a checkpoint is refreshed when a new user message arrives after the meaningful-round threshold.
-- 恢复注入：新任务可读取相关断点、项目总结和长期经验的短摘要。 Recovery injection: new tasks can receive compact context from relevant checkpoints, project summaries, and reusable experience.
+- 恢复注入：新任务可读取相关断点、项目总结和长期经验的短摘要；复用长期经验时，Codex 会先向用户说明文档来源。 Recovery injection: new tasks can receive compact context from relevant checkpoints, project summaries, and reusable experience; Codex announces the document before reusing long-term experience.
 - 项目总结：独立项目固定写入 `项目总结/<项目名>.md`，同一会话涉及多个独立项目时合并为一篇并记录 `session_ids`。父项目目录需要用户明确确认归属关系。 Project summaries: independent projects use `项目总结/<项目名>.md`; multiple independent projects in one session are merged into one note with `session_ids`. Parent-project directories require explicit user confirmation.
-- 长期经验：仅在同一项目累计至少 5 个会话且跨度至少 14 天后生成 `长期经验总结/<项目名>.md`，内容包括代码或配置、命令、操作方法、完成路径和避坑记录。 Long-term experience is generated at `长期经验总结/<项目名>.md` only after at least 5 sessions over 14 days, with code or configuration, commands, operating methods, completion paths, and pitfalls.
+- 长期经验：仅由用户通过 `synthesize` 明确授权后写入 `长期经验总结/<项目名>.md`。写入前评估核心材料；有效类别不足三类时必须再次询问。自动 hook 不会创建、覆盖或删除长期经验。 Long-term experience is written to `长期经验总结/<项目名>.md` only through explicit user authorization in `synthesize`. Core material is assessed first; fewer than three useful categories requires a further user decision. Automatic hooks never create, replace, or delete long-term experience.
 - 搜索与合成：保留本地 `search` 与 `synthesize` skills。 Search and synthesis: local `search` and `synthesize` skills remain available.
 - PreTool 提醒：写入项目文档前提示已有相关材料。 PreTool reminder: project-document writes are checked against existing material.
 
@@ -125,6 +125,7 @@ Enable the complete Codex and Obsidian knowledge workflow on this machine.
 3. 需要立即刷新当前断点时调用 checkpoint skill。 Invoke the checkpoint skill to refresh the current checkpoint immediately.
 4. 需要查找知识时调用 search skill；需要跨会话整理时调用 synthesize skill。 Invoke search to find knowledge and synthesize to consolidate related sessions.
 5. 接手项目时优先读取 `项目总结/<项目名>.md`；已确认的父项目才读取 `项目总结/<父项目>/项目总结.md`。 When resuming a project, read `项目总结/<项目名>.md` first; read `项目总结/<父项目>/项目总结.md` only for confirmed parent projects.
+6. 需要长期经验时明确调用 `synthesize` 并授权写入；普通 checkpoint 不会生成该文件。 Explicitly invoke `synthesize` and authorize the write for long-term experience; ordinary checkpoints never generate it.
 
 ## 目录结构 / Repository Layout
 

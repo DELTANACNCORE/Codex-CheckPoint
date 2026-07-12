@@ -28,7 +28,7 @@ RECOVERY_SECTIONS = (
     "实际产出",
 )
 PROJECT_SECTIONS = ("项目定位", "当前状态", "后续恢复入口")
-EXPERIENCE_SECTIONS = ("长期经验总结", "可复用经验", "避坑清单", "下次同类项目流程", "验收检查清单")
+EXPERIENCE_SECTIONS = ("核心结论", "经典代码与配置", "常用指令", "操作方法", "完成路径", "避坑清单", "验收检查清单")
 GENERIC_KEYWORDS = {
     "checkpoint", "codex", "hook", "obsidian", "知识库", "会话", "项目", "总结", "搜索", "检索",
 }
@@ -243,7 +243,7 @@ def render_project_brief(projects: list[str]) -> str:
 
 
 def render_long_term_experience(keywords: list[str]) -> str:
-    """每个新任务都先读取长期经验目录，再只注入与当前请求有关的结论。"""
+    """匹配长期经验，并要求 Codex 在复用前向用户说明来源。"""
     if not EXPERIENCE_DIR.is_dir() or not keywords:
         return ""
     candidates = []
@@ -263,14 +263,22 @@ def render_long_term_experience(keywords: list[str]) -> str:
     if not candidates:
         return ""
     blocks = []
+    titles = []
     for _, path, text in sorted(candidates, key=lambda item: (-item[0], item[1].name))[:2]:
-        parts = [f"### 长期经验总结：{extract_h1(text, path.stem)}"]
+        title = extract_h1(text, path.stem)
+        titles.append(title)
+        parts = [f"### 长期经验总结：{title}"]
         for heading in EXPERIENCE_SECTIONS:
             section = extract_section(text, heading)
             if section:
                 parts.append(f"#### {heading}\n{clamp(section, 420)}")
         blocks.append("\n\n".join(parts))
-    return clamp("\n\n".join(blocks), 900)
+    notice = (
+        "长期经验复用要求：本轮回复开头先向用户说明“已发现并复用长期经验："
+        + "、".join(titles)
+        + "”。随后才可使用下列内容；不得把它当作无提示的隐含上下文。"
+    )
+    return clamp(notice + "\n\n" + "\n\n".join(blocks), 900)
 
 
 def recovery_brief(session_id: str, prompt: str) -> str:
@@ -333,8 +341,8 @@ def main() -> None:
         if experience:
             result = clamp(f"{experience}\n\n{result}", MAX_CONTEXT_CHARS)
         context = (
-            "以下是已从 Obsidian 读取的长期经验与任务恢复包。把其中已验证结论视为当前事实，"
-            "先基于它继续工作；只有恢复包缺少必要细节时才读取完整 rollout transcript：\n\n"
+            "以下是已从 Obsidian 读取的任务恢复包。若其中包含长期经验，严格遵循其复用提示，"
+            "先向用户说明再使用；只有恢复包缺少必要细节时才读取完整 rollout transcript：\n\n"
             f"{result}"
         )
     else:
@@ -342,8 +350,8 @@ def main() -> None:
         if not result:
             return
         context = (
-            "以下是本轮任务先行读取的长期经验或本地知识库结论。优先沿用已验证内容；"
-            "与当前问题无关时忽略：\n\n"
+            "以下是本轮任务先行读取的知识库结论。若包含长期经验，严格遵循其复用提示，"
+            "先向用户说明再使用；与当前问题无关时忽略：\n\n"
             f"{result}"
         )
     print(json.dumps({
