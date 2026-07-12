@@ -1,4 +1,4 @@
-# Codex CheckPoint V0.5.5 / Codex 会话断点 V0.5.5
+# Codex CheckPoint V0.5.6 / Codex 会话断点 V0.5.6
 
 为 Codex 与 Obsidian 提供会话断点、持续恢复、项目总结和知识检索。仓库只包含运行时 hook、skills、README、许可证和忽略规则，不包含安装、迁移、打包或解包脚本。
 

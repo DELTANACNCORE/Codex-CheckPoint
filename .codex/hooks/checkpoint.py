@@ -1416,7 +1416,7 @@ def _fallback_project_summary(project: str, ctx: dict, session_note_path: Path) 
 ## 后续恢复入口
 
 - 先读 [[项目总结]]，快速恢复项目状态和当前缺口。
-- 再读 [[Codex hook 与 skill 更新日志]] 和 [[checkpoint 迁到 Codex]]，掌握最近一次规则变动和验证证据。
+- 再读 [[Codex协同Obsidian工作流skill更新日志]] 和 [[checkpoint 迁到 Codex]]，掌握最近一次规则变动和验证证据。
 - 如需理解迁移主线，再读 [[checkpoint 迁到 Codex]] 和最近断点 {session_link}。
 
 ## 相关笔记
@@ -1499,6 +1499,7 @@ def update_dashboard():
     pending_entries = []
     unarchived_entries = []
     project_entries = []
+    experience_docs = []
 
     for n in notes:
         try:
@@ -1553,6 +1554,12 @@ def update_dashboard():
                 doc_count += 1
             doc_count += 1
 
+    if EXPERIENCE_DIR.is_dir():
+        for experience in sorted(EXPERIENCE_DIR.glob("*.md")):
+            title = _extract_h1(_read_text_limited(experience, 1200), experience.stem)
+            experience_docs.append((experience, title))
+    experience_entries = [f"- {_vault_link(path, title)}" for path, title in experience_docs]
+
     completed = status_counts["completed"]
     interrupted = status_counts["interrupted"]
     incomplete = status_counts["incomplete_archive"]
@@ -1597,6 +1604,12 @@ def update_dashboard():
 
     latest_index = max(INDEX_DIR.glob("*.md"), default=None, key=lambda path: path.name)
     work_entry = _vault_link(latest_index, "Codex工作记录") if latest_index else "Codex工作记录暂无会话索引"
+    if len(experience_docs) == 1:
+        experience_entry = _vault_link(experience_docs[0][0], "长期经验总结")
+    elif experience_entries:
+        experience_entry = f"长期经验总结共 {len(experience_entries)} 篇，见下方列表"
+    else:
+        experience_entry = "暂无长期经验总结"
     dash = f"""# 知识库首页
 
 > 更新于 `{vault_now().strftime('%Y-%m-%d %H:%M UTC+8')}`
@@ -1613,7 +1626,7 @@ def update_dashboard():
 
 ## 入口
 
-- [[长期经验总结]]
+- {experience_entry}
 - [[项目总结]]
 - {work_entry}
 - [[Codex协同Obsidian工作流skill更新日志]]
@@ -1625,6 +1638,10 @@ def update_dashboard():
 ## 项目
 
 {chr(10).join(project_entries) if project_entries else '暂无项目文档'}
+
+## 长期经验
+
+{chr(10).join(experience_entries) if experience_entries else '暂无长期经验总结'}
 
 ## 待恢复会话
 
