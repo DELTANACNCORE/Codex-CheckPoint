@@ -5,7 +5,7 @@ $HooksJson = Join-Path $CodexHome "hooks.json"
 $SkillsDir = Join-Path $CodexHome "skills"
 $AgentsDst = Join-Path $CodexHome "AGENTS.md"
 
-Write-Host "[checkpoint-codex] 正在卸载..."
+Write-Host "[checkpoint-codex] 正在卸载 / Uninstalling..."
 
 if (Test-Path $HooksJson) {
   $py = @'
@@ -56,7 +56,7 @@ foreach ($skill in @("checkpoint", "search", "synthesize")) {
   $path = Join-Path $SkillsDir $skill
   if (Test-Path $path) {
     Remove-Item $path -Recurse -Force
-    Write-Host "[checkpoint-codex] 已删除 skill: $path"
+    Write-Host "[checkpoint-codex] 已删除 skill / skill removed: $path"
   }
 }
 
@@ -64,16 +64,16 @@ foreach ($hook in @("checkpoint.py", "pretool.py", "stop-wrapper.py", "pretool-w
   $hookPath = Join-Path $CodexHome "hooks/$hook"
   if (Test-Path $hookPath) {
     Remove-Item $hookPath -Force
-    Write-Host "[checkpoint-codex] 已删除 hook: $hookPath"
+    Write-Host "[checkpoint-codex] 已删除 hook / hook removed: $hookPath"
   }
 }
 
 if ((Test-Path $AgentsDst) -and (Select-String -Path $AgentsDst -Pattern '^# Codex Checkpoint Guide$' -Quiet)) {
   Remove-Item $AgentsDst -Force
-  Write-Host "[checkpoint-codex] 已删除自动生成的 AGENTS 模板: $AgentsDst"
+  Write-Host "[checkpoint-codex] 已删除自动生成的 AGENTS 模板 / generated AGENTS template removed: $AgentsDst"
 }
 
 Write-Host ""
-Write-Host "[checkpoint-codex] 卸载完成。"
-Write-Host "- 你的 Obsidian 笔记仍然保留在 vault 里"
-Write-Host "- 如需继续使用，重新运行 install.ps1 即可"
+Write-Host "[checkpoint-codex] 卸载完成 / Uninstall complete."
+Write-Host "- Obsidian 笔记仍保留在 vault 里 / Obsidian notes remain in the vault"
+Write-Host "- 如需继续使用，重新运行 install.ps1 / Run install.ps1 again to resume use"

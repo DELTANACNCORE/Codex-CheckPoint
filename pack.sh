@@ -22,7 +22,7 @@ PY
 fi
 
 if [ -z "${VAULT:-}" ]; then
-  read -r -p "Obsidian vault 路径 [默认: $HOME/obsidian/知识库]: " VAULT
+  read -r -p "Obsidian vault 路径 / path [默认 / default: $HOME/obsidian/知识库]: " VAULT
   VAULT="${VAULT:-$HOME/obsidian/知识库}"
 fi
 VAULT="${VAULT/#~/$HOME}"
@@ -30,10 +30,10 @@ VAULT="${VAULT/#~/$HOME}"
 SESSIONS="$HOME/.codex/sessions"
 OUT="checkpoint-codex-migrate-$(date +%Y%m%d-%H%M%S).tar.gz"
 
-echo "[pack-codex] vault: $VAULT"
+echo "[pack-codex] 知识库 / vault: $VAULT"
 
 if [ ! -d "$VAULT/Codex工作记录" ]; then
-  echo "[pack-codex] Codex工作记录/ 不存在，目录不对？"
+  echo "[pack-codex] Codex工作记录/ 不存在，目录可能错误 / Codex工作记录/ is missing; check the vault path"
   exit 1
 fi
 
@@ -46,4 +46,4 @@ tar -czf "$OUT" -C "$VAULT" "${items[@]}" -C "$HOME" .codex/sessions
 
 SIZE=$(du -h "$OUT" | cut -f1)
 echo "[pack-codex] -> $OUT ($SIZE)"
-echo "[pack-codex] 传到新电脑后运行 unpack.sh"
+echo "[pack-codex] 传到新电脑后运行 unpack.sh / On a new machine, run unpack.sh"

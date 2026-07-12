@@ -1,7 +1,7 @@
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Lite = $args[0] -eq "--lite"
-$ModeText = if ($Lite) { "Lite（仅手动 /checkpoint）" } else { "Full（自动 hook + 手动 /checkpoint）" }
-Write-Host "[checkpoint-codex] 安装模式: $ModeText"
+$ModeText = if ($Lite) { "Lite（仅手动 /checkpoint） / Lite (manual /checkpoint only)" } else { "Full（自动 hook + 手动 /checkpoint） / Full (automatic hooks + manual /checkpoint)" }
+Write-Host "[checkpoint-codex] 安装模式 / Installation mode: $ModeText"
 $HookSrc = Join-Path $ScriptDir ".codex/hooks/checkpoint.py"
 $PretoolSrc = Join-Path $ScriptDir ".codex/hooks/pretool.py"
 $StopWrapperSrc = Join-Path $ScriptDir ".codex/hooks/stop-wrapper.py"
@@ -27,28 +27,28 @@ $ConfigToml = Join-Path $CodexHome "config.toml"
 $DefaultVault = Join-Path $HOME "obsidian/知识库"
 
 if (-not (Test-Path $HookSrc)) {
-  Write-Error "[checkpoint-codex] 找不到 hook 脚本: $HookSrc"
+  Write-Error "[checkpoint-codex] 找不到 hook 脚本 / Hook script not found: $HookSrc"
   exit 1
 }
 if (-not (Test-Path $PretoolSrc)) {
-  Write-Error "[checkpoint-codex] 找不到 PreToolUse 脚本: $PretoolSrc"
+  Write-Error "[checkpoint-codex] 找不到 PreToolUse 脚本 / PreToolUse script not found: $PretoolSrc"
   exit 1
 }
 if (-not (Test-Path $StopWrapperSrc)) {
-  Write-Error "[checkpoint-codex] 找不到 Stop wrapper: $StopWrapperSrc"
+  Write-Error "[checkpoint-codex] 找不到 Stop wrapper / Stop wrapper not found: $StopWrapperSrc"
   exit 1
 }
 if (-not (Test-Path $RetrieveSrc)) {
-  Write-Error "[checkpoint-codex] 找不到检索 hook: $RetrieveSrc"
+  Write-Error "[checkpoint-codex] 找不到检索 hook / Retrieval hook not found: $RetrieveSrc"
   exit 1
 }
 if (-not (Test-Path $PretoolWrapperSrc)) {
-  Write-Error "[checkpoint-codex] 找不到 PreTool wrapper: $PretoolWrapperSrc"
+  Write-Error "[checkpoint-codex] 找不到 PreTool wrapper / PreTool wrapper not found: $PretoolWrapperSrc"
   exit 1
 }
 
 Write-Host ""
-$Vault = Read-Host "你的 Obsidian vault 路径 [默认: $DefaultVault]"
+$Vault = Read-Host "Obsidian vault 路径 / path [默认 / default: $DefaultVault]"
 if ([string]::IsNullOrWhiteSpace($Vault)) {
   $Vault = $DefaultVault
 }
@@ -112,9 +112,9 @@ tags: [codex/方案, ...]
 - Lite 模式：手动运行 checkpoint skill
 - 项目目录有真实产出时，会同步刷新项目总结和长期经验总结
 "@ | Set-Content $AgentsDst -Encoding UTF8
-  Write-Host "[checkpoint-codex] 已创建全局 AGENTS 模板: $AgentsDst"
+  Write-Host "[checkpoint-codex] 已创建全局 AGENTS 模板 / Global AGENTS template created: $AgentsDst"
 } else {
-  Write-Host "[checkpoint-codex] 检测到已有 AGENTS.md，跳过创建"
+  Write-Host "[checkpoint-codex] 检测到已有 AGENTS.md，跳过创建 / Existing AGENTS.md detected, skipped"
 }
 
 $data = @{}
@@ -207,22 +207,22 @@ $upsFiltered = if ($Lite) {
 $data["hooks"]["UserPromptSubmit"] = $upsFiltered
 $data | ConvertTo-Json -Depth 10 | Set-Content -Encoding UTF8 $HooksJson
 
-Write-Host "[checkpoint-codex] 安装完成"
+Write-Host "[checkpoint-codex] 安装完成 / Installation complete"
 if ($Lite) {
-  Write-Host "[checkpoint-codex] Lite 模式已清理 Stop / UserPromptSubmit 自动写入"
+  Write-Host "[checkpoint-codex] Lite 模式已清理自动写入 / Lite mode cleared automatic writes"
 } else {
-  Write-Host "[checkpoint-codex] Stop hook 已写入 $HooksJson"
+  Write-Host "[checkpoint-codex] Stop hook 已写入 / registered: $HooksJson"
 }
-Write-Host "[checkpoint-codex] PreToolUse hook 已写入 $HooksJson"
-Write-Host "[checkpoint-codex] /checkpoint skill 已装到 $SkillDst"
+Write-Host "[checkpoint-codex] PreToolUse hook 已写入 / registered: $HooksJson"
+Write-Host "[checkpoint-codex] /checkpoint skill 已安装 / installed: $SkillDst"
 if (Test-Path $SearchSrc) {
-  Write-Host "[checkpoint-codex] search 可执行 skill 已装到 $SearchDst"
+  Write-Host "[checkpoint-codex] search skill 已安装 / installed: $SearchDst"
 }
 if (Test-Path $SynthSrc) {
-  Write-Host "[checkpoint-codex] synthesize 可执行 skill 已装到 $SynthDst"
+  Write-Host "[checkpoint-codex] synthesize skill 已安装 / installed: $SynthDst"
 }
-Write-Host "[checkpoint-codex] checkpoint.py 手动执行链路已经验证"
-Write-Host "[checkpoint-codex] checkpoint skill 已切到 $(if ($Lite) { 'Lite' } else { 'Full' }) 版本"
-Write-Host "[checkpoint-codex] 全局 AGENTS 模板: $AgentsDst"
-Write-Host "[checkpoint-codex] slash 直调当前没有完成验证，稳定方式仍然是按 skill 调脚本"
-Write-Host "[checkpoint-codex] 当前版本仅支持 Codex，本地解析 rollout，不调用第三方模型服务"
+Write-Host "[checkpoint-codex] checkpoint.py 手动执行链路已验证 / manual checkpoint.py path verified"
+Write-Host "[checkpoint-codex] checkpoint skill 使用 $(if ($Lite) { 'Lite' } else { 'Full' }) 版本 / mode"
+Write-Host "[checkpoint-codex] 全局 AGENTS 模板 / Global AGENTS template: $AgentsDst"
+Write-Host "[checkpoint-codex] slash 直调尚未稳定验证，可靠方式是按 skill 调脚本 / native slash invocation is not yet verified"
+Write-Host "[checkpoint-codex] 当前版本仅支持 Codex，本地解析 rollout，不调用第三方模型服务 / Codex-only, local rollout parsing, no third-party model service"

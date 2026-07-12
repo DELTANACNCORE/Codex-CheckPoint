@@ -1,51 +1,51 @@
-name: Bug report
-description: Report a reproducible problem in the Codex checkpoint workflow.
+name: 错误报告 / Bug report
+description: 报告可复现的 Codex checkpoint 工作流问题。 / Report a reproducible problem in the Codex checkpoint workflow.
 title: "bug: "
 labels: [bug]
 body:
   - type: markdown
     attributes:
-      value: Do not include rollout files, vault content, tokens, or personal paths.
+      value: 请勿包含 rollout 文件、vault 内容、令牌或个人路径。 / Do not include rollout files, vault content, tokens, or personal paths.
   - type: input
     id: version
     attributes:
-      label: Version or commit
-      description: The release, branch, or commit where the problem occurred.
+      label: 版本或提交 / Version or commit
+      description: 出现问题的 Release、分支或提交。 / The release, branch, or commit where the problem occurred.
     validations:
       required: true
   - type: dropdown
     id: component
     attributes:
-      label: Component
+      label: 组件 / Component
       options:
-        - Install or uninstall
-        - Hook
-        - Checkpoint skill
-        - Search or synthesize skill
-        - Obsidian output
-        - Documentation
+        - 安装或卸载 / Install or uninstall
+        - Hook / Hook
+        - Checkpoint skill / Checkpoint skill
+        - 搜索或合成 skill / Search or synthesize skill
+        - Obsidian 输出 / Obsidian output
+        - 文档 / Documentation
     validations:
       required: true
   - type: textarea
     id: behavior
     attributes:
-      label: Actual behavior
-      description: Describe the result and include redacted error output when useful.
+      label: 实际行为 / Actual behavior
+      description: 描述结果，必要时附上脱敏错误输出。 / Describe the result and include redacted error output when useful.
     validations:
       required: true
   - type: textarea
     id: reproduction
     attributes:
-      label: Reproduction steps
+      label: 复现步骤 / Reproduction steps
       placeholder: |
-        1. Run ...
-        2. Start a Codex task ...
-        3. Observe ...
+        1. 运行 ... / Run ...
+        2. 启动 Codex 任务 ... / Start a Codex task ...
+        3. 观察 ... / Observe ...
     validations:
       required: true
   - type: textarea
     id: expected
     attributes:
-      label: Expected behavior
+      label: 预期行为 / Expected behavior
     validations:
       required: true

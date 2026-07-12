@@ -1,23 +1,23 @@
-name: Feature request
-description: Suggest an improvement to the Codex checkpoint workflow.
+name: 功能请求 / Feature request
+description: 建议改进 Codex checkpoint 工作流。 / Suggest an improvement to the Codex checkpoint workflow.
 title: "feature: "
 labels: [enhancement]
 body:
   - type: textarea
     id: problem
     attributes:
-      label: Problem
-      description: Describe the workflow gap this request addresses.
+      label: 问题 / Problem
+      description: 描述此请求要解决的工作流缺口。 / Describe the workflow gap this request addresses.
     validations:
       required: true
   - type: textarea
     id: proposal
     attributes:
-      label: Proposed change
-      description: Explain the expected behavior and affected workflow.
+      label: 建议改动 / Proposed change
+      description: 说明预期行为和受影响的工作流。 / Explain the expected behavior and affected workflow.
     validations:
       required: true
   - type: textarea
     id: alternatives
     attributes:
-      label: Alternatives considered
+      label: 已考虑的替代方案 / Alternatives considered

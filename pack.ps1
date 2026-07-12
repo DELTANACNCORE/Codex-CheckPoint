@@ -15,16 +15,16 @@ if (-not $Vault) {
 
 if (-not $Vault) {
   $Default = Join-Path $HOME "obsidian\知识库"
-  $Vault = Read-Host "Obsidian vault 路径 [默认: $Default]"
+  $Vault = Read-Host "Obsidian vault 路径 / path [默认 / default: $Default]"
   if (-not $Vault) { $Vault = $Default }
 }
 
 $Out = "checkpoint-codex-migrate-$(Get-Date -Format 'yyyyMMdd-HHmmss').tar.gz"
 
-Write-Host "[pack-codex] vault: $Vault"
+Write-Host "[pack-codex] 知识库 / vault: $Vault"
 
 if (-not (Test-Path (Join-Path $Vault "Codex工作记录"))) {
-  Write-Error "[pack-codex] Codex工作记录/ 不存在，目录不对？"
+  Write-Error "[pack-codex] Codex工作记录/ 不存在，目录可能错误 / Codex工作记录/ is missing; check the vault path"
   exit 1
 }
 
@@ -37,4 +37,4 @@ tar -czf $Out -C $Vault @Items -C $HOME .codex/sessions 2>$null
 
 $Size = (Get-Item $Out).Length / 1MB
 Write-Host "[pack-codex] -> $Out ($([math]::Round($Size,1))MB)"
-Write-Host "[pack-codex] 传到新电脑后运行 unpack.ps1"
+Write-Host "[pack-codex] 传到新电脑后运行 unpack.ps1 / On a new machine, run unpack.ps1"
