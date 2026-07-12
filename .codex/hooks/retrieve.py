@@ -32,8 +32,13 @@ EXPERIENCE_SECTIONS = ("核心结论", "经典代码与配置", "常用指令", 
 GENERIC_KEYWORDS = {
     "checkpoint", "codex", "hook", "obsidian", "知识库", "会话", "项目", "总结", "搜索", "检索",
 }
+EXPERIENCE_GENERIC_TERMS = GENERIC_KEYWORDS | {
+    "长期经验", "经验", "更新", "配置", "操作", "服务", "系统", "工具", "工作流", "验证", "检查",
+    "docker", "compose", "容器", "运维",
+}
 RECOVERY_INTENT = ("恢复", "继续", "接手", "上次", "重启", "断点", "checkpoint", "知识库", "项目总结")
 DEFAULT_RESTART_INTENT = ("重启事项", "按重启", "继续上一个", "恢复上一个", "上次任务")
+SEARCH_INTENT = RECOVERY_INTENT + ("查找", "搜索", "检索", "资料", "文档")
 
 
 def normalize_event(raw: str) -> dict:
@@ -60,6 +65,17 @@ def is_meaningful_prompt(prompt: str) -> bool:
     return True
 
 
+def user_request_text(prompt: str) -> str:
+    """移除桌面端附带的引用标注，避免旧回复文本反向触发知识检索。"""
+    text = str(prompt or "")
+    request_marker = "## My request for Codex:"
+    if request_marker in text:
+        text = text.split(request_marker, 1)[1]
+    text = re.sub(r"(?ms)^# Response annotations:.*?</response-annotations>\s*", "", text)
+    text = re.sub(r"(?ms)<response-annotations>.*?</response-annotations>\s*", "", text)
+    return text.strip()
+
+
 def read_text(path: Path) -> str:
     try:
         return path.read_text(encoding="utf-8")
@@ -76,6 +92,11 @@ def extract_list(text: str, key: str) -> list[str]:
     except json.JSONDecodeError:
         return []
     return [str(value).strip() for value in values if str(value).strip()] if isinstance(values, list) else []
+
+
+def extract_frontmatter_string(text: str, key: str) -> str:
+    matched = re.search(rf"^{re.escape(key)}:\s*\"?([^\n\"]+)\"?$", text, re.MULTILINE)
+    return matched.group(1).strip() if matched else ""
 
 
 def extract_value(text: str, key: str) -> str:
@@ -103,7 +124,7 @@ def clamp(text: str, limit: int) -> str:
 def find_session_note(session_id: str) -> Path | None:
     if not session_id or not NOTES_DIR.is_dir():
         return None
-    for path in NOTES_DIR.glob("*.md"):
+    for path in NOTES_DIR.rglob("*.md"):
         text = read_text(path)
         matched = re.search(r'^session_id:\s*"([^"]+)"', text, re.MULTILINE)
         if matched and matched.group(1) == session_id:
@@ -165,7 +186,7 @@ def best_matching_note(keywords: list[str]) -> Path | None:
     if not NOTES_DIR.is_dir():
         return None
     candidates = []
-    for path in NOTES_DIR.glob("*.md"):
+    for path in NOTES_DIR.rglob("*.md"):
         text = read_text(path)
         score = score_note(path, text, keywords)
         if score:
@@ -242,22 +263,53 @@ def render_project_brief(projects: list[str]) -> str:
     return ""
 
 
-def render_long_term_experience(keywords: list[str]) -> str:
+def match_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", str(value or "").lower())
+
+
+def is_specific_experience_term(value: str) -> bool:
+    key = match_key(value)
+    if key in EXPERIENCE_GENERIC_TERMS:
+        return False
+    return len(key) >= 3
+
+
+def long_term_match_score(path: Path, text: str, prompt: str) -> int:
+    """长期经验只接受稳定身份词或多个特征词，避免通用运维词把无关经验带入。"""
+    prompt_key = match_key(prompt)
+    if not prompt_key:
+        return 0
+
+    project = extract_frontmatter_string(text, "project")
+    aliases = extract_list(text, "aliases")
+    strong_terms = [project, path.stem, *aliases]
+    for term in strong_terms:
+        key = match_key(term)
+        if is_specific_experience_term(term) and key in prompt_key:
+            return 100 + len(key)
+
+    title = extract_h1(text, path.stem)
+    tags = extract_list(text, "tags")
+    weak_terms = []
+    for term in [title, *tags]:
+        key = match_key(term)
+        if is_specific_experience_term(term) and key in prompt_key and key not in weak_terms:
+            weak_terms.append(key)
+    if len(weak_terms) < 2:
+        return 0
+    return sum(len(term) for term in weak_terms) + 20
+
+
+def render_long_term_experience(prompt: str) -> str:
     """匹配长期经验，并要求 Codex 在复用前向用户说明来源。"""
-    if not EXPERIENCE_DIR.is_dir() or not keywords:
+    if not EXPERIENCE_DIR.is_dir() or not prompt:
         return ""
     candidates = []
     for path in EXPERIENCE_DIR.glob("*.md"):
         text = read_text(path)
         if not text:
             continue
-        title = extract_h1(text, path.stem).lower()
-        tags = " ".join(extract_list(text, "tags")).lower()
-        body = text.lower()
-        score = 0
-        for keyword in keywords:
-            term = keyword.lower()
-            score += title.count(term) * 12 + tags.count(term) * 8 + body.count(term)
+        score = long_term_match_score(path, text, prompt)
         if score:
             candidates.append((score, path, text))
     if not candidates:
@@ -324,18 +376,23 @@ def search_knowledge(keywords: list[str]) -> str:
     return clamp(result, MAX_CONTEXT_CHARS)
 
 
+def should_search_knowledge(prompt: str) -> bool:
+    lowered = (prompt or "").lower()
+    return any(marker in lowered for marker in SEARCH_INTENT)
+
+
 def main() -> None:
     raw = sys.stdin.read()
     event = normalize_event(raw)
     if event.get("hook_event_name") != "UserPromptSubmit":
         return
-    prompt = str(event.get("prompt", "") or "")
+    prompt = user_request_text(str(event.get("prompt", "") or ""))
     if not is_meaningful_prompt(prompt):
         return
 
     session_id = str(event.get("session_id", "") or "")
     keywords = keywords_for(prompt, [])
-    experience = render_long_term_experience(keywords)
+    experience = render_long_term_experience(prompt)
     result = recovery_brief(session_id, prompt)
     if result:
         if experience:
@@ -346,7 +403,9 @@ def main() -> None:
             f"{result}"
         )
     else:
-        result = experience or search_knowledge(keywords)
+        result = experience
+        if not result and should_search_knowledge(prompt):
+            result = search_knowledge(keywords)
         if not result:
             return
         context = (

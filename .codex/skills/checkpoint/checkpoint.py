@@ -55,6 +55,11 @@ def main():
         print(f"未找到 hook 脚本：{hook}")
         sys.exit(1)
 
+    vault_root = Path(args.vault_root).expanduser().resolve()
+    if not vault_root.is_dir() or not (vault_root / ".obsidian").is_dir():
+        print(f"不是有效的 Obsidian vault：{vault_root}")
+        sys.exit(1)
+
     rollout = None
     if args.rollout:
         rollout = Path(args.rollout).expanduser().resolve()
@@ -70,8 +75,9 @@ def main():
     cmd = [
         sys.executable,
         str(hook),
+        "--manual-checkpoint",
         "--vault-root",
-        args.vault_root,
+        str(vault_root),
         "--transcript",
         str(rollout),
         "--session-id",

@@ -2,6 +2,7 @@
 """Synthesize Codex checkpoints into a higher-signal knowledge note."""
 
 import argparse
+from difflib import SequenceMatcher
 import importlib.util
 import json
 import os
@@ -13,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 
 VAULT_TIMEZONE = ZoneInfo("Asia/Shanghai")
+LINK_VAULT_ROOT: Path | None = None
 
 
 SECTION_HEADINGS = [
@@ -44,6 +46,14 @@ LOW_SIGNAL_TITLE_PATTERNS = (
     r"\btrust\b",
     r"\bbypass\b",
 )
+CLEANUP_LOW_SIGNAL_TITLE_PATTERNS = (
+    r"^__image_",
+    r"^\[\$(?:checkpoint|synthesize|search)\]",
+    r"^/(?:checkpoint|synthesize|search)(?:\s|$)",
+    r"^(?:checkpoint|synthesize|search)\s*$",
+    r"^(?:本次对话(?:项目)?已(?:写入|加入)|正在(?:写入|生成)).*",
+    r"^(?:你这个感觉对|好的|可以|行|继续|重新开始|开始|完成|现在可用了吗|这个对话能用吗|那就先做第一步|请只回复(?:一句)?|第[一二三四五六七八九十0-9]+题|问题[一二三四五六七八九十0-9]*|verify|trust|bypass).*$",
+)
 LONG_SESSION_MIN_PROMPTS = 20
 LONG_SESSION_MIN_CHARS = 12000
 
@@ -54,9 +64,14 @@ def parse_args():
     group.add_argument("--project")
     group.add_argument("--tag")
     group.add_argument("--cluster", action="store_true")
+    group.add_argument("--cleanup-checkpoints", action="store_true", help="扫描伪对话和重复断点，默认只输出候选")
+    parser.add_argument("--cluster-project", help="确认聚类后写入的目标项目名")
+    parser.add_argument("--confirm-cluster", action="store_true", help="确认用户明确要求按聚类范围写入")
     parser.add_argument("--title")
     parser.add_argument("--vault-root", default=str(Path("~/obsidian/知识库").expanduser()))
+    parser.add_argument("--sessions-root", help="Codex rollout 根目录，默认使用 $CODEX_HOME/sessions")
     parser.add_argument("--limit", type=int, default=6)
+    parser.add_argument("--apply-cleanup", action="store_true", help="执行 --cleanup-checkpoints 的高置信清理")
     parser.add_argument("--long-term", action="store_true", help="评估或写入用户授权的长期经验总结")
     parser.add_argument("--user-approved", action="store_true", help="确认用户明确授权写入长期经验")
     parser.add_argument("--replace-approved", action="store_true", help="确认用户明确授权覆盖已有长期经验")
@@ -70,8 +85,43 @@ def read_text(path: Path) -> str:
         return ""
 
 
+def source_link(path: Path) -> str:
+    """为分类后的断点生成唯一的 vault 相对链接。"""
+    if LINK_VAULT_ROOT is not None:
+        try:
+            relative = path.relative_to(LINK_VAULT_ROOT).with_suffix("").as_posix()
+            return f"[[{relative}|{path.stem}]]"
+        except ValueError:
+            pass
+    return f"[[{path.stem}]]"
+
+
 def normalize_space(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "")).strip()
+
+
+def cleanup_title_key(title: str) -> str:
+    """将标题转换为适合严格比对的键，同时移除常见的副本后缀。"""
+    normalized = normalize_space(title).lower()
+    normalized = re.sub(r"^#\s*", "", normalized)
+    normalized = re.sub(r"\.(?:md|markdown)$", "", normalized)
+    normalized = re.sub(r"(?:\s*[-_]?)?(?:副本|复制|copy)(?:\s*\d+)?\s*$", "", normalized, flags=re.IGNORECASE)
+    return re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", normalized)
+
+
+def cleanup_title_reason(title: str) -> str:
+    """只依据标题识别明显不适合作为会话名的写入回执与交互碎片。"""
+    cleaned = normalize_space(title)
+    if not cleaned:
+        return "标题为空"
+    compact = re.sub(r"\s+", "", cleaned).lower()
+    if any(re.match(pattern, cleaned, re.IGNORECASE) for pattern in CLEANUP_LOW_SIGNAL_TITLE_PATTERNS):
+        return "标题属于技能调用、写入回执或确认语"
+    if any(re.match(pattern, compact, re.IGNORECASE) for pattern in LOW_SIGNAL_TITLE_PATTERNS):
+        return "标题属于低信息确认语"
+    if len(cleaned) > 56 and re.search(r"(?:当前会话|本次对话|该条|说明|仍未|为什么|之后|因为)", cleaned):
+        return "标题像原始进度消息，无法概括会话"
+    return ""
 
 
 def clamp_text(text: str, limit: int = 180) -> str:
@@ -169,7 +219,7 @@ def build_record(path: Path, text: str) -> dict:
     sections = {heading: extract_block(text, heading) for heading in SECTION_HEADINGS}
     status_match = re.search(r'^status:\s*"([^"]+)"', text, re.MULTILINE)
     date_text = extract_frontmatter_value(text, "date")
-    kind = "session" if path.parent.name == "会话断点" else "doc"
+    kind = "session" if "会话断点" in path.parts else "doc"
     return {
         "path": path,
         "text": text,
@@ -191,7 +241,7 @@ def build_record(path: Path, text: str) -> dict:
 
 def note_records(note_dir: Path) -> list[dict]:
     records = []
-    for path in sorted(note_dir.glob("*.md")):
+    for path in sorted(note_dir.rglob("*.md")):
         text = read_text(path)
         if not text:
             continue
@@ -232,6 +282,228 @@ def dedupe_records(records: list[dict]) -> list[dict]:
         seen.add(key)
         unique.append(record)
     return unique
+
+
+def default_sessions_root() -> Path:
+    codex_home = os.environ.get("CODEX_HOME")
+    if codex_home:
+        return Path(codex_home).expanduser() / "sessions"
+    return Path.home() / ".codex" / "sessions"
+
+
+def rollout_session_ids(sessions_root: Path) -> set[str]:
+    """只以 rollout 文件名确认会话存在，不读取完整私有会话内容。"""
+    if not sessions_root.is_dir():
+        return set()
+    session_ids = set()
+    pattern = re.compile(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$", re.IGNORECASE)
+    for path in sessions_root.rglob("rollout-*.jsonl"):
+        matched = pattern.search(path.stem)
+        if matched:
+            session_ids.add(matched.group(1))
+    return session_ids
+
+
+def checkpoint_substance(record: dict) -> str:
+    """排除 frontmatter、时间和恢复提示，只比较真正的会话摘要内容。"""
+    sections = record["sections"]
+    blocks = [
+        sections.get("可直接续接的结论", ""),
+        sections.get("会话目标演进", ""),
+        sections.get("实际产出", "") or sections.get("产出", ""),
+    ]
+    text = "\n".join(block for block in blocks if block)
+    text = re.sub(r"\[\[([^\]|]+)(?:\|[^\]]+)?\]\]", r"\1", text)
+    text = re.sub(r"`[^`]+`", "", text)
+    text = re.sub(r"[^a-zA-Z0-9\u4e00-\u9fff]+", "", text).lower()
+    return text[:12000]
+
+
+def checkpoint_content_similarity(left: dict, right: dict) -> float:
+    left_text = checkpoint_substance(left)
+    right_text = checkpoint_substance(right)
+    if not left_text or not right_text:
+        return 0.0
+    if left_text == right_text:
+        return 1.0
+    if min(len(left_text), len(right_text)) < 80:
+        return 0.0
+    return SequenceMatcher(None, left_text, right_text).ratio()
+
+
+def checkpoint_titles_match(left: dict, right: dict) -> bool:
+    left_key = cleanup_title_key(left["title"])
+    right_key = cleanup_title_key(right["title"])
+    if not left_key or not right_key:
+        return False
+    if left_key == right_key:
+        return True
+    if min(len(left_key), len(right_key)) < 8:
+        return False
+    return SequenceMatcher(None, left_key, right_key).ratio() >= 0.92
+
+
+def has_matching_rollout(record: dict, known_session_ids: set[str]) -> bool:
+    session_id = record.get("session_id", "")
+    return bool(session_id and session_id in known_session_ids)
+
+
+def checkpoint_quality(record: dict, known_session_ids: set[str]) -> tuple:
+    substance = checkpoint_substance(record)
+    return (
+        int(has_matching_rollout(record, known_session_ids)),
+        int(len(substance) >= 120),
+        prompt_count(record["text"]),
+        len(substance),
+        len(record["text"]),
+        str(record["path"]),
+    )
+
+
+def clean_title_candidate(value: str) -> str:
+    candidate = normalize_space(value)
+    candidate = re.sub(r"^[-*]\s+", "", candidate)
+    candidate = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", candidate)
+    candidate = re.sub(r"`([^`]+)`", r"\1", candidate)
+    candidate = re.sub(r"^\*\*[^*]+\*\*[:：]\s*", "", candidate)
+    candidate = re.split(r"(?<=[。！？!?])\s*", candidate)[0]
+    candidate = candidate.strip(" 。；;：:")
+    return candidate[:60]
+
+
+def project_title(project: str) -> str:
+    title = re.sub(r"[_-]+", " ", normalize_space(project))
+    title = re.sub(r"(?i)checkpoint", "checkpoint", title)
+    title = re.sub(r"(?i)codex", "Codex", title)
+    title = re.sub(r"(?<=[A-Za-z])(?=[\u4e00-\u9fff])|(?<=[\u4e00-\u9fff])(?=[A-Za-z])", " ", title)
+    return normalize_space(title)[:60]
+
+
+def is_usable_title_candidate(candidate: str) -> bool:
+    if not candidate or len(candidate) < 5 or len(candidate) > 60:
+        return False
+    if cleanup_title_reason(candidate):
+        return False
+    if candidate.startswith(("我会", "现在会", "接下来会", "正在", "随后会")):
+        return False
+    return "[$" not in candidate and "会话 ID" not in candidate
+
+
+def suggest_checkpoint_title(record: dict) -> str:
+    """真实会话的失真标题优先退回已记录项目，再从目标演进中选择可读标题。"""
+    projects = dedupe_texts(record.get("projects", []))
+    if len(projects) == 1:
+        candidate = project_title(projects[0])
+        if is_usable_title_candidate(candidate):
+            return candidate
+
+    goal_block = record["sections"].get("会话目标演进", "") or record["sections"].get("最近会话脉络", "")
+    candidates = [clean_title_candidate(item) for item in parse_items(goal_block)]
+    candidates = [candidate for candidate in candidates if is_usable_title_candidate(candidate)]
+    if candidates:
+        return max(enumerate(candidates), key=lambda item: (len(extract_terms(item[1])), len(item[1]), item[0]))[1]
+
+    conclusion = record["sections"].get("可直接续接的结论", "")
+    for sentence in re.split(r"(?<=[。！？!?])\s*", conclusion):
+        candidate = clean_title_candidate(sentence)
+        if is_usable_title_candidate(candidate) and not re.match(r"^(?:已发现并复用长期经验|本次对话已写入)", candidate):
+            return candidate
+    return ""
+
+
+def cleanup_candidate_priority(action: str) -> int:
+    return {"delete": 3, "rename": 2, "report": 1}.get(action, 0)
+
+
+def add_cleanup_candidate(candidates: dict[str, dict], candidate: dict) -> None:
+    key = str(candidate["record"]["path"])
+    existing = candidates.get(key)
+    if existing is None or cleanup_candidate_priority(candidate["action"]) > cleanup_candidate_priority(existing["action"]):
+        candidates[key] = candidate
+
+
+def cleanup_candidate(action: str, record: dict, reason: str, other: dict | None = None, new_title: str = "") -> dict:
+    return {
+        "action": action,
+        "record": record,
+        "reason": reason,
+        "other": other,
+        "new_title": new_title,
+    }
+
+
+def build_checkpoint_cleanup_candidates(records: list[dict], known_session_ids: set[str]) -> list[dict]:
+    """产生可审阅候选。两条都能回查 rollout 的相似会话只做报告。"""
+    candidates: dict[str, dict] = {}
+
+    by_session_id: dict[str, list[dict]] = {}
+    for record in records:
+        session_id = record.get("session_id", "")
+        if session_id:
+            by_session_id.setdefault(session_id, []).append(record)
+    for session_id, grouped in by_session_id.items():
+        if len(grouped) < 2:
+            continue
+        canonical = max(grouped, key=lambda record: checkpoint_quality(record, known_session_ids))
+        for record in grouped:
+            if record is canonical:
+                continue
+            similarity = checkpoint_content_similarity(canonical, record)
+            if similarity >= 0.92:
+                add_cleanup_candidate(
+                    candidates,
+                    cleanup_candidate("delete", record, f"同一 session_id {session_id[:12]} 的重复副本，正文相似度 {similarity:.0%}", canonical),
+                )
+            else:
+                add_cleanup_candidate(
+                    candidates,
+                    cleanup_candidate("report", record, f"同一 session_id {session_id[:12]} 出现内容不同的多份记录", canonical),
+                )
+
+    for index, left in enumerate(records):
+        for right in records[index + 1 :]:
+            if left.get("session_id") and left.get("session_id") == right.get("session_id"):
+                continue
+            if not checkpoint_titles_match(left, right):
+                continue
+            similarity = checkpoint_content_similarity(left, right)
+            if similarity < 0.92:
+                add_cleanup_candidate(
+                    candidates,
+                    cleanup_candidate("report", right, f"标题与“{left['title']}”重复，但正文相似度仅 {similarity:.0%}", left),
+                )
+                continue
+            canonical = max((left, right), key=lambda record: checkpoint_quality(record, known_session_ids))
+            duplicate = right if canonical is left else left
+            if not has_matching_rollout(duplicate, known_session_ids):
+                add_cleanup_candidate(
+                    candidates,
+                    cleanup_candidate("delete", duplicate, f"标题和正文均重复，且没有匹配 rollout，正文相似度 {similarity:.0%}", canonical),
+                )
+            elif has_matching_rollout(canonical, known_session_ids):
+                add_cleanup_candidate(
+                    candidates,
+                    cleanup_candidate("report", duplicate, f"两个真实会话标题和正文高度相似，正文相似度 {similarity:.0%}", canonical),
+                )
+
+    for record in records:
+        existing = candidates.get(str(record["path"]))
+        if existing and existing["action"] == "delete":
+            continue
+        reason = cleanup_title_reason(record["title"])
+        if not reason:
+            continue
+        if not has_matching_rollout(record, known_session_ids):
+            add_cleanup_candidate(candidates, cleanup_candidate("delete", record, f"{reason}，且没有匹配 rollout"))
+            continue
+        new_title = suggest_checkpoint_title(record)
+        if new_title and cleanup_title_key(new_title) != cleanup_title_key(record["title"]):
+            add_cleanup_candidate(candidates, cleanup_candidate("rename", record, reason, new_title=new_title))
+        else:
+            add_cleanup_candidate(candidates, cleanup_candidate("report", record, f"{reason}，但无法从现有摘要安全推导新标题"))
+
+    action_order = {"delete": 0, "rename": 1, "report": 2}
+    return sorted(candidates.values(), key=lambda item: (action_order[item["action"]], str(item["record"]["path"])))
 
 
 def is_low_signal_session(record: dict) -> bool:
@@ -361,13 +633,13 @@ def select_records(records: list[dict], args, plans_dir: Path) -> tuple[str, lis
         if len(cluster) > len(best):
             best = cluster
             best_tags = sorted(overlap_tags)
-    title = args.title or (" ".join(best_tags[:2]) + " 知识整理" if best_tags else "Codex 知识整理")
-    tags = ["codex/方案"] + best_tags[:4]
-    return "知识合成", best[: args.limit], tags
+    project = args.cluster_project.strip()
+    tags = dedupe_texts(["codex/方案", project, "知识合成"] + best_tags[:4])
+    return project, best[: args.limit], tags
 
 
 def format_record_item(record: dict, text: str) -> str:
-    return f"- [[{record['path'].stem}]]：{clamp_text(text)}"
+    return f"- {source_link(record['path'])}：{clamp_text(text)}"
 
 
 def collect_section_from_records(records: list[dict], headings: list[str], limit: int, predicate=None) -> list[str]:
@@ -432,13 +704,13 @@ def collect_evidence(records: list[dict]) -> list[str]:
             continue
         title = record["title"]
         if "bypass hook trust" in title.lower():
-            items.append(f"- [[{record['path'].stem}]]：trust 放行前链路验证。")
+            items.append(f"- {source_link(record['path'])}：trust 放行前链路验证。")
         elif "normal trust verify" in title.lower() or "正常信任" in title:
-            items.append(f"- [[{record['path'].stem}]]：正常信任模式写回验证。")
+            items.append(f"- {source_link(record['path'])}：正常信任模式写回验证。")
         elif "final cli verify" in title.lower():
-            items.append(f"- [[{record['path'].stem}]]：CLI 最终写回验证。")
+            items.append(f"- {source_link(record['path'])}：CLI 最终写回验证。")
         elif "checkpoint" in title.lower():
-            items.append(f"- [[{record['path'].stem}]]：手动 checkpoint 或断点写回验证。")
+            items.append(f"- {source_link(record['path'])}：手动 checkpoint 或断点写回验证。")
     return dedupe_texts(items, 5)
 
 
@@ -448,7 +720,7 @@ def synthesize_body(project: str, title: str, records: list[dict]) -> str:
     gaps = collect_gaps(records)
     actions = collect_actions(records)
     evidence = collect_evidence(records)
-    related = dedupe_texts([f"- [[{record['path'].stem}]]" for record in records], 12)
+    related = dedupe_texts([f"- {source_link(record['path'])}" for record in records], 12)
 
     if not backgrounds:
         backgrounds = ["- 当前材料不足，缺少可直接复用的背景说明。"]
@@ -515,7 +787,7 @@ def synthesize_long_term_body(project: str, title: str, records: list[dict]) -> 
     conclusions = collect_verified(records) or collect_background(records)
     operations = collect_actions(records)
     pitfalls = collect_gaps(records)
-    sources = dedupe_texts([f"- [[{record['path'].stem}]]" for record in records], 12)
+    sources = dedupe_texts([f"- {source_link(record['path'])}" for record in records], 12)
     return (
         f"# {title}\n\n"
         "## 核心结论\n\n" + "\n".join(conclusions or ["- 待补充：来源材料未提供可验证的核心结论。"]) + "\n\n"
@@ -538,6 +810,278 @@ def set_frontmatter_value(text: str, key: str, value: str) -> str:
     if re.search(pattern, text, re.MULTILINE):
         return re.sub(pattern, line, text, count=1, flags=re.MULTILINE)
     return re.sub(r"^---\n", f"---\n{line}\n", text, count=1)
+
+
+def vault_note_target(path: Path, vault_root: Path) -> str:
+    try:
+        return path.relative_to(vault_root).with_suffix("").as_posix()
+    except ValueError:
+        return ""
+
+
+def replace_wikilink_targets(text: str, replacements: dict[str, str]) -> str:
+    """只替换完整的 Obsidian 链接目标，保留别名和标题锚点。"""
+    result = text
+    for old_target, new_target in sorted(replacements.items(), key=lambda item: -len(item[0])):
+        if not old_target or old_target == new_target:
+            continue
+        pattern = re.compile(r"\[\[" + re.escape(old_target) + r"(?P<anchor>#[^|\]]*)?(?P<alias>\|[^\]]+)?\]\]")
+        result = pattern.sub(
+            lambda match: f"[[{new_target}{match.group('anchor') or ''}{match.group('alias') or ''}]]",
+            result,
+        )
+    return result
+
+
+def checkpoint_link_targets(record: dict, vault_root: Path, records: list[dict]) -> set[str]:
+    targets = {vault_note_target(record["path"], vault_root)}
+    stem = record["path"].stem
+    title = record["title"]
+    if sum(other["path"].stem == stem for other in records) == 1:
+        targets.add(stem)
+    if title and sum(other["title"] == title for other in records) == 1:
+        targets.add(title)
+    return {target for target in targets if target}
+
+
+def line_references_target(line: str, target: str) -> bool:
+    pattern = r"\[\[" + re.escape(target) + r"(?:#[^|\]]*)?(?:\|[^\]]+)?\]\]"
+    return bool(re.search(pattern, line))
+
+
+def daily_index_topic_cell(line: str) -> str:
+    cells = line.rstrip("\n").split("|")
+    return cells[3] if len(cells) > 3 else ""
+
+
+def remove_daily_index_entries(vault_root: Path, record: dict, records: list[dict]) -> int:
+    index_dir = vault_root / "Codex工作记录" / "会话索引"
+    if not index_dir.is_dir():
+        return 0
+    session_id = record.get("session_id", "")
+    marker = f"<!-- session:{session_id} -->" if session_id else ""
+    targets = checkpoint_link_targets(record, vault_root, records)
+    removed = 0
+    for index_path in index_dir.glob("*.md"):
+        text = read_text(index_path)
+        if not text:
+            continue
+        lines = text.splitlines(keepends=True)
+        kept = []
+        for line in lines:
+            is_row = line.lstrip().startswith("|")
+            is_marked = bool(marker and marker in line)
+            is_linked = is_row and any(line_references_target(daily_index_topic_cell(line), target) for target in targets)
+            if is_row and (is_marked or is_linked):
+                removed += 1
+                continue
+            kept.append(line)
+        rewritten = "".join(kept)
+        if rewritten != text:
+            index_path.write_text(rewritten, encoding="utf-8")
+    return removed
+
+
+def available_renamed_checkpoint_path(record: dict, new_title: str) -> Path:
+    current_path = record["path"]
+    candidate = current_path.with_name(f"{safe_filename(new_title)}.md")
+    if candidate == current_path or not candidate.exists():
+        return candidate
+    suffix = safe_filename(record.get("session_id", "")[:8] or "session")
+    numbered = current_path.with_name(f"{safe_filename(new_title)}-{suffix}.md")
+    sequence = 2
+    while numbered.exists() and numbered != current_path:
+        numbered = current_path.with_name(f"{safe_filename(new_title)}-{suffix}-{sequence}.md")
+        sequence += 1
+    return numbered
+
+
+def rewrite_vault_links_for_rename(vault_root: Path, replacements: dict[str, str]) -> None:
+    for path in vault_root.rglob("*.md"):
+        text = read_text(path)
+        if not text:
+            continue
+        rewritten = replace_wikilink_targets(text, replacements)
+        if rewritten != text:
+            path.write_text(rewritten, encoding="utf-8")
+
+
+def rewrite_renamed_checkpoint_aliases(vault_root: Path, target: str, old_title: str, new_title: str) -> None:
+    """重命名断点后同步显示名，避免项目总结继续展示被清理的旧标题。"""
+    if not target or not old_title or old_title == new_title:
+        return
+    pattern = re.compile(
+        r"\[\[" + re.escape(target) + r"(?P<anchor>#[^|\]]*)?\|" + re.escape(old_title) + r"\]\]"
+    )
+    for path in vault_root.rglob("*.md"):
+        text = read_text(path)
+        if not text:
+            continue
+        rewritten = pattern.sub(
+            lambda match: f"[[{target}{match.group('anchor') or ''}|{new_title}]]",
+            text,
+        )
+        if rewritten != text:
+            path.write_text(rewritten, encoding="utf-8")
+
+
+def split_markdown_table_row(line: str) -> list[str]:
+    """按表格分隔符拆行，保留 wikilink 别名内部的竖线。"""
+    cells = []
+    current = []
+    inside_wikilink = False
+    index = 0
+    raw = line.rstrip("\n")
+    while index < len(raw):
+        if raw.startswith("[[", index):
+            inside_wikilink = True
+            current.append("[[")
+            index += 2
+            continue
+        if raw.startswith("]]", index):
+            inside_wikilink = False
+            current.append("]]")
+            index += 2
+            continue
+        char = raw[index]
+        if char == "|" and not inside_wikilink:
+            cells.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+        index += 1
+    cells.append("".join(current))
+    return cells
+
+
+def refresh_daily_index_link(vault_root: Path, session_id: str, new_path: Path) -> None:
+    if not session_id:
+        return
+    index_dir = vault_root / "Codex工作记录" / "会话索引"
+    if not index_dir.is_dir():
+        return
+    marker = f"<!-- session:{session_id} -->"
+    new_target = vault_note_target(new_path, vault_root)
+    if not new_target:
+        return
+    for index_path in index_dir.glob("*.md"):
+        text = read_text(index_path)
+        if not text or marker not in text:
+            continue
+        lines = text.splitlines(keepends=True)
+        changed = False
+        for index, line in enumerate(lines):
+            if marker not in line or not line.lstrip().startswith("|"):
+                continue
+            cells = split_markdown_table_row(line)
+            marker_index = next((position for position, cell in enumerate(cells) if marker in cell), -1)
+            if marker_index < 5:
+                continue
+            output_cell = cells[marker_index - 1]
+            rebuilt = cells[:3] + [f" [[{new_target}|{new_path.stem}]] ", output_cell, cells[marker_index]]
+            lines[index] = "|".join(rebuilt) + "\n"
+            changed = True
+        if changed:
+            index_path.write_text("".join(lines), encoding="utf-8")
+
+
+def rename_checkpoint_note(vault_root: Path, record: dict, new_title: str, records: list[dict]) -> Path | None:
+    current_path = record["path"]
+    text = read_text(current_path)
+    if not text:
+        return None
+    old_title = record["title"]
+    updated = re.sub(r"^#\s+.+$", f"# {new_title}", text, count=1, flags=re.MULTILINE)
+    aliases = dedupe_texts(extract_frontmatter_list(updated, "aliases") + ([old_title] if old_title else []))
+    if aliases:
+        updated = set_frontmatter_value(updated, "aliases", json.dumps(aliases, ensure_ascii=False))
+    new_path = available_renamed_checkpoint_path(record, new_title)
+    current_path.write_text(updated, encoding="utf-8")
+    if new_path != current_path:
+        current_path.rename(new_path)
+
+    replacements = {vault_note_target(current_path, vault_root): vault_note_target(new_path, vault_root)}
+    if sum(other["path"].stem == current_path.stem for other in records) == 1:
+        replacements[current_path.stem] = vault_note_target(new_path, vault_root)
+    if old_title and sum(other["title"] == old_title for other in records) == 1:
+        replacements[old_title] = vault_note_target(new_path, vault_root)
+    rewrite_vault_links_for_rename(vault_root, replacements)
+    rewrite_renamed_checkpoint_aliases(vault_root, vault_note_target(new_path, vault_root), old_title, new_title)
+    refresh_daily_index_link(vault_root, record.get("session_id", ""), new_path)
+    return new_path
+
+
+def cleanup_relative_path(record: dict, vault_root: Path) -> str:
+    target = vault_note_target(record["path"], vault_root)
+    return target or str(record["path"])
+
+
+def print_checkpoint_cleanup_candidates(candidates: list[dict], vault_root: Path) -> None:
+    if not candidates:
+        print("未发现伪对话、重复断点或需要修正的标题。")
+        return
+    labels = {"delete": "删除候选", "rename": "重命名候选", "report": "人工复核"}
+    for candidate in candidates:
+        record = candidate["record"]
+        line = f"{labels[candidate['action']]}: {cleanup_relative_path(record, vault_root)}"
+        if candidate["action"] == "rename":
+            line += f" -> {candidate['new_title']}"
+        if candidate.get("other"):
+            line += f"；对照：{candidate['other']['title']}"
+        print(f"{line}；原因：{candidate['reason']}")
+
+
+def run_checkpoint_cleanup(args, vault_root: Path, note_dir: Path) -> None:
+    sessions_root = Path(args.sessions_root).expanduser().resolve() if args.sessions_root else default_sessions_root()
+    records = note_records(note_dir)
+    known_session_ids = rollout_session_ids(sessions_root)
+    candidates = build_checkpoint_cleanup_candidates(records, known_session_ids)
+    counts = {action: sum(candidate["action"] == action for candidate in candidates) for action in ("delete", "rename", "report")}
+    matched = sum(has_matching_rollout(record, known_session_ids) for record in records)
+    print(f"断点清理检查：扫描 {len(records)} 条断点，匹配 rollout {matched} 条，rollout 根目录：{sessions_root}")
+    print(f"删除候选：{counts['delete']}；重命名候选：{counts['rename']}；人工复核：{counts['report']}。")
+    print_checkpoint_cleanup_candidates(candidates, vault_root)
+    if not args.apply_cleanup:
+        print("本次仅生成候选，未修改任何断点或索引。确认后使用 --cleanup-checkpoints --apply-cleanup 执行。")
+        return
+
+    deleted = 0
+    index_rows_removed = 0
+    delete_paths = {
+        str(candidate["record"]["path"])
+        for candidate in candidates
+        if candidate["action"] == "delete"
+    }
+    retained_session_records = {}
+    for record in records:
+        session_id = record.get("session_id", "")
+        if session_id and str(record["path"]) not in delete_paths:
+            retained_session_records.setdefault(session_id, record)
+    for candidate in candidates:
+        if candidate["action"] != "delete":
+            continue
+        record = candidate["record"]
+        path = record["path"]
+        if not path.exists():
+            continue
+        if record.get("session_id") not in retained_session_records:
+            index_rows_removed += remove_daily_index_entries(vault_root, record, records)
+        path.unlink()
+        deleted += 1
+
+    for session_id, record in retained_session_records.items():
+        if any(candidate["record"].get("session_id") == session_id for candidate in candidates if candidate["action"] == "delete"):
+            refresh_daily_index_link(vault_root, session_id, record["path"])
+
+    renamed = 0
+    for candidate in candidates:
+        if candidate["action"] != "rename":
+            continue
+        if rename_checkpoint_note(vault_root, candidate["record"], candidate["new_title"], records):
+            renamed += 1
+    if deleted or renamed:
+        refresh_dashboard(vault_root)
+    print(f"清理完成：删除 {deleted} 条断点，重命名 {renamed} 条断点，移除 {index_rows_removed} 条索引记录。")
 
 
 def prompt_count(text: str) -> int:
@@ -625,14 +1169,12 @@ def refresh_daily_index_status(vault_root: Path, archived_paths: list[Path]) -> 
         if not index_path.is_file():
             continue
         lines = index_path.read_text(encoding="utf-8").splitlines(keepends=True)
-        match_key = f"[[{note_path.stem}]]"
+        session_id = extract_frontmatter_value(text, "session_id")
+        marker = f"<!-- session:{session_id} -->" if session_id else ""
         for index, line in enumerate(lines):
-            if match_key not in line or not line.lstrip().startswith("|"):
+            if not marker or marker not in line or not line.lstrip().startswith("|"):
                 continue
-            cells = line.rstrip("\n").split("|")
-            if len(cells) >= 5:
-                cells[2] = " 📚 "
-                lines[index] = "|".join(cells) + "\n"
+            lines[index] = re.sub(r"^(\|\s*[^|]+\|\s*)[^|]+", r"\1📚 ", line)
         index_path.write_text("".join(lines), encoding="utf-8")
 
 
@@ -656,13 +1198,37 @@ def refresh_dashboard(vault_root: Path) -> None:
 
 def main():
     args = parse_args()
+    if args.confirm_cluster and not args.cluster:
+        print("--confirm-cluster 只能与 --cluster 一起使用。", file=sys.stderr)
+        sys.exit(2)
+    if args.cluster_project and not args.cluster:
+        print("--cluster-project 只能与 --cluster 一起使用。", file=sys.stderr)
+        sys.exit(2)
+    if args.cluster and not args.confirm_cluster:
+        print("聚类模式可能跨项目选择材料；请在用户明确确认范围后添加 --confirm-cluster。", file=sys.stderr)
+        sys.exit(2)
+    if args.cluster and not (args.cluster_project or "").strip():
+        print("聚类模式必须提供 --cluster-project <项目名>，避免生成无归属的“知识合成”项目总结。", file=sys.stderr)
+        sys.exit(2)
+    if args.apply_cleanup and not args.cleanup_checkpoints:
+        print("--apply-cleanup 只能与 --cleanup-checkpoints 一起使用。", file=sys.stderr)
+        sys.exit(2)
+    if args.cleanup_checkpoints and args.long_term:
+        print("断点清理不能同时写入长期经验。", file=sys.stderr)
+        sys.exit(2)
     vault_root = Path(args.vault_root).expanduser().resolve()
+    global LINK_VAULT_ROOT
+    LINK_VAULT_ROOT = vault_root
     work_dir = vault_root / "Codex工作记录"
     projects_dir = vault_root / "项目总结"
     note_dir = work_dir / "会话断点"
     if not note_dir.is_dir():
         print(f"未找到目录：{note_dir}")
         sys.exit(1)
+
+    if args.cleanup_checkpoints:
+        run_checkpoint_cleanup(args, vault_root, note_dir)
+        return
 
     records = note_records(note_dir)
     project, selected, tags = select_records(records, args, projects_dir)
