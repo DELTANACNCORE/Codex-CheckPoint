@@ -185,6 +185,22 @@ session_ids: ["{session_id}"]
         knowledge_note = self.note_for_session(KNOWLEDGE_SESSION)
         self.assertEqual(docker_note.parent.name, "系统与运维")
         self.assertEqual(knowledge_note.parent.name, "知识库与工作流")
+        written_lines = [
+            line for line in manual_result.stdout.splitlines()
+            if line.startswith("[obsidian-hook] Session checkpoint written: ")
+        ]
+        self.assertEqual(
+            written_lines,
+            [f"[obsidian-hook] Session checkpoint written: {docker_note.resolve()}"],
+        )
+        resolved_vault = self.vault.resolve()
+        relative_note = docker_note.resolve().relative_to(resolved_vault).as_posix()
+        relative_directory = docker_note.parent.resolve().relative_to(resolved_vault).as_posix() + "/"
+        self.assertIn(
+            "[obsidian-hook] Session checkpoint location: "
+            f"vault-relative={relative_note}; folder={relative_directory}",
+            manual_result.stdout,
+        )
         self.assertIn("# Docker 服务初始验证已完成", docker_note.read_text(encoding="utf-8"))
         self.assertIn('checkpoint_category: "系统与运维"', docker_note.read_text(encoding="utf-8"))
         self.assertEqual(list(note_dir.glob("*.md")), [])

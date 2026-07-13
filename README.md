@@ -1,4 +1,4 @@
-# Codex CheckPoint V0.6.0 / Codex 会话断点 V0.6.0
+# Codex CheckPoint V0.6.1 / Codex 会话断点 V0.6.1
 
 为 Codex 与 Obsidian 提供会话断点、持续恢复、项目总结和知识检索。仓库只包含运行时 hook、skills、README、许可证和忽略规则，不包含安装、迁移、打包或解包脚本。
 
@@ -22,6 +22,10 @@ This project is based on [hjm4839-coder/checkpoint](https://github.com/hjm4839-c
 - 长期经验：每次 `synthesize` 都会归档项目总结，并按会话长度提示是否值得提炼长期经验。只有用户明确授权或强制要求时才写入 `长期经验总结/<项目名>.md`；有效材料类别不足三类时必须再次询问。自动 hook 不会创建、覆盖或删除长期经验。 Long-term experience: every `synthesize` run archives the project summary and uses session length to recommend extraction. `长期经验总结/<项目名>.md` is written only with explicit user authorization or a forced request; fewer than three useful material categories requires another user decision. Automatic hooks never create, replace, or delete long-term experience.
 - 搜索与合成：保留本地 `search` 与 `synthesize` skills；合成必须指定项目或标签。聚类合成额外要求用户确认范围和目标项目名，未确认的聚类不能写入知识库。 Search and synthesis: local `search` and `synthesize` skills remain available. Synthesis requires an explicit project or tag. Cluster synthesis also requires a user-confirmed scope and target project name; an unconfirmed cluster cannot write to the vault.
 - PreTool 提醒：写入项目文档前提示已有相关材料。 PreTool reminder: project-document writes are checked against existing material.
+
+## V0.6.1 / 版本 0.6.1
+
+- 最终断点位置：手动 checkpoint 完成分类后才输出写入回执。回执同时给出绝对路径、分类后的 vault 相对文件路径和所在目录，避免仅显示文件名或分类前位置。 Final checkpoint location: manual checkpoint reports the write only after classification. The receipt includes the absolute path, classified vault-relative file path, and parent directory so it never shows only a filename or the pre-classification location.
 
 ## V0.6.0 / 版本 0.6.0
 

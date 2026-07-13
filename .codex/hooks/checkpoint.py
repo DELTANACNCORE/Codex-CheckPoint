@@ -2777,7 +2777,6 @@ def main():
         note_path=session_note_path,
         transcript=transcript_path,
     )
-    print(f"[obsidian-hook] Session checkpoint written: {session_note_path}")
     if manual_checkpoint:
         categorized_paths, category_report = organize_checkpoint_notes()
         session_note_path = categorized_paths.get(session_id, session_note_path)
@@ -2790,6 +2789,18 @@ def main():
             f"rollout_backed={category_report['transcript_backed']}, skipped={category_report['skipped']}; "
             f"{category_details}"
         )
+    final_note_path = session_note_path.resolve()
+    try:
+        vault_relative_path = final_note_path.relative_to(VAULT_ROOT).as_posix()
+        vault_relative_directory = final_note_path.parent.relative_to(VAULT_ROOT).as_posix() + "/"
+    except ValueError:
+        vault_relative_path = str(final_note_path)
+        vault_relative_directory = str(final_note_path.parent) + os.sep
+    print(f"[obsidian-hook] Session checkpoint written: {final_note_path}")
+    print(
+        "[obsidian-hook] Session checkpoint location: "
+        f"vault-relative={vault_relative_path}; folder={vault_relative_directory}"
+    )
     update_daily_index(INDEX_DIR, session_note_path, session_id, ctx, status)
     project_notes = update_project_knowledge(ctx, session_note_path)
     if project_notes:

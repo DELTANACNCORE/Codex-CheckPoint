@@ -43,7 +43,7 @@ python3 ~/.codex/skills/checkpoint/checkpoint.py --vault-root "$OBSIDIAN_VAULT" 
 - 默认调用会检查当前断点标题，优先使用可用的 Codex 会话标题；只有自动生成的回执、长问句或其他机械标题才会改名。`title_baseline` 用于识别用户在 Obsidian 中做过的改名，用户标题不会被自动覆盖。随后会扫描全部断点的 rollout 并统一归类；缺失 rollout 的旧断点依据其已有摘要归类。 Default calls inspect the current title and prefer a usable Codex thread title; only automatic receipts, long question titles, and other mechanical titles are renamed. `title_baseline` protects titles changed in Obsidian. It then scans every saved checkpoint rollout and classifies all notes together; older notes without a rollout use their existing recovery brief.
 - `--keep-title` 完全保留当前断点标题，仍会执行全量分类。 `--keep-title` preserves the current title completely and still runs the full classification pass.
 - 只通过本 skill 的包装脚本执行手动 checkpoint，不直接调用 hook。包装脚本会验证 `--vault-root` 是包含 `.obsidian` 的真实 vault；hook 事件缺少匹配 rollout 时会跳过，绝不回退读取其他会话。 Run manual checkpoint only through this skill wrapper, not the hook directly. The wrapper verifies that `--vault-root` is a real vault containing `.obsidian`; hook events without a matching rollout are skipped and never fall back to another session.
-- 输出写入状态、目标笔记路径和告警信息。 Prints write status, the target note path, and warnings.
+- 完成回复必须逐行给出最终断点文件与所在目录，使用分类后的 vault 相对路径，例如 `Codex工作记录/会话断点/系统与运维/检查 Docker 服务.md` 和 `Codex工作记录/会话断点/系统与运维/`。不得只写文件名、链接别名或分类前路径。脚本输出同时保留绝对路径，供后续归档识别。 The completion reply must state the final checkpoint file and its parent directory on separate lines using the classified vault-relative paths, for example `Codex工作记录/会话断点/系统与运维/检查 Docker 服务.md` and `Codex工作记录/会话断点/系统与运维/`. Never report only a filename, link alias, or the pre-classification path. Script output also retains the absolute path for downstream archive detection.
 
 ## 已验证范围 / Verified Scope
 
