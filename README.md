@@ -1,4 +1,4 @@
-# Codex CheckPoint V0.6.2 / Codex 会话断点 V0.6.2
+# Codex CheckPoint V0.7.0 / Codex 会话断点 V0.7.0
 
 为 Codex 与 Obsidian 提供会话断点、持续恢复、项目总结和知识检索。仓库只包含运行时 hook、skills、README、许可证和忽略规则，不包含安装、迁移、打包或解包脚本。
 
@@ -23,6 +23,12 @@ This project is based on [hjm4839-coder/checkpoint](https://github.com/hjm4839-c
 - 敏感信息脱敏：自动生成的断点、每日索引、项目总结、首页与 AI开发参考会替换常见 Bearer Token、API Key、访问令牌、密码、JWT、`sk-` 密钥、Cookie 和私钥内容。普通项目 Markdown 不会被扫描或改写。 Sensitive-information redaction: generated checkpoints, daily indexes, project summaries, the homepage, and AI development references replace common Bearer tokens, API keys, access tokens, passwords, JWTs, `sk-` keys, cookies, and private keys. Ordinary project Markdown files are neither scanned nor rewritten.
 - 搜索与合成：保留本地 `search` 与 `synthesize` skills；合成必须指定项目或标签。聚类合成额外要求用户确认范围和目标项目名，未确认的聚类不能写入知识库。 Search and synthesis: local `search` and `synthesize` skills remain available. Synthesis requires an explicit project or tag. Cluster synthesis also requires a user-confirmed scope and target project name; an unconfirmed cluster cannot write to the vault.
 - PreTool 提醒：写入项目文档前提示已有相关材料。 PreTool reminder: project-document writes are checked against existing material.
+
+## V0.7.0 / 版本 0.7.0
+
+- AI开发参考：将面向跨任务复用的用户控制知识统一命名为 `AI开发参考/<项目名>.md`。每次 `synthesize` 都会归档项目总结，只有用户明确授权后才创建或替换 AI开发参考；旧 `长期经验总结/` 保持只读兼容。 AI development references: user-controlled knowledge for cross-task reuse is now named `AI开发参考/<项目名>.md`. Every `synthesize` run archives the project summary, while creating or replacing an AI development reference requires explicit user authorization. The former `长期经验总结/` directory remains read-compatible.
+- 精确复用：AI开发参考仅在项目名或别名直接匹配，或至少两个独立特征词同时匹配时注入恢复上下文。Docker、运维等宽泛主题词不再单独触发，也不会被界面引用标注意外带入。 Precise reuse: an AI development reference is injected only for a direct project or alias match, or at least two independent identity terms. Broad topics such as Docker or operations no longer trigger reuse alone, and UI response annotations cannot accidentally reintroduce one.
+- 凭据保护：断点、每日索引、项目总结、首页和 AI开发参考在写入前会脱敏常见令牌、密钥、密码、Cookie、JWT 与私钥；用户自行维护的普通项目 Markdown 保持原样。 Credential protection: checkpoints, daily indexes, project summaries, the homepage, and AI development references redact common tokens, keys, passwords, cookies, JWTs, and private keys before writing. Ordinary user-maintained project Markdown remains unchanged.
 
 ## V0.6.2 / 版本 0.6.2
 
