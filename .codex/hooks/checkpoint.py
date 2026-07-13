@@ -160,6 +160,7 @@ INDEX_DIR = PLANS_DIR / "会话索引"
 NOTE_DIR = PLANS_DIR / "会话断点"
 EXPERIENCE_DIR = VAULT_ROOT / "长期经验总结"
 PROJECTS_DIR = VAULT_ROOT / "项目总结"
+UNCLASSIFIED_CHECKPOINT_DIR = NOTE_DIR / "未分类对话"
 
 CHECKPOINT_CATEGORY_RULES = (
     ("知识库与工作流", ("checkpoint", "obsidian", "知识库", "synthesize", "hook", "会话断点", "vault")),
@@ -1905,9 +1906,22 @@ def _repair_daily_index_links(index_dir: Path, replacements: dict):
             index_path.write_text(rewritten, encoding="utf-8")
 
 
-def organize_checkpoint_notes() -> tuple[dict, dict]:
-    """手动 checkpoint 时统一读取已有会话并归类，自动 hook 不会调用此函数。"""
-    note_paths = sorted(NOTE_DIR.rglob("*.md"))
+def organize_checkpoint_notes(current_note_path: Path | None = None) -> tuple[dict, dict]:
+    """仅归类未分类断点、遗留顶层断点和当前被手动重新检查的会话。"""
+    candidates = [
+        *sorted(UNCLASSIFIED_CHECKPOINT_DIR.rglob("*.md")),
+        *sorted(NOTE_DIR.glob("*.md")),
+    ]
+    if current_note_path is not None and current_note_path.is_file():
+        candidates.append(current_note_path)
+    note_paths = []
+    seen_paths = set()
+    for path in candidates:
+        resolved = path.resolve()
+        if resolved in seen_paths:
+            continue
+        seen_paths.add(resolved)
+        note_paths.append(path)
     rollouts = _rollouts_by_session()
     final_paths = {}
     moved_pairs = []
@@ -2683,6 +2697,7 @@ def main():
     ctx["status"] = status
     os.makedirs(INDEX_DIR, exist_ok=True)
     os.makedirs(NOTE_DIR, exist_ok=True)
+    os.makedirs(UNCLASSIFIED_CHECKPOINT_DIR, exist_ok=True)
     os.makedirs(PROJECTS_DIR, exist_ok=True)
     existing_note = find_note_by_session(NOTE_DIR, session_id)
     if (
@@ -2762,9 +2777,9 @@ def main():
         ctx["tags"] = synth["tags"]
         ctx["keywords"] = synth["keywords"]
         fname = sanitize_filename(ctx["topic"])
-        candidate = NOTE_DIR / f"{fname}.md"
+        candidate = UNCLASSIFIED_CHECKPOINT_DIR / f"{fname}.md"
         if candidate.exists():
-            candidate = NOTE_DIR / f"{fname}-{session_id[:8]}.md"
+            candidate = UNCLASSIFIED_CHECKPOINT_DIR / f"{fname}-{session_id[:8]}.md"
         session_note_path = candidate
     related = find_related_notes(ctx["tags"], session_note_path)
     note_content = generate_session_note(session_id, ctx, status, related)
@@ -2778,7 +2793,7 @@ def main():
         transcript=transcript_path,
     )
     if manual_checkpoint:
-        categorized_paths, category_report = organize_checkpoint_notes()
+        categorized_paths, category_report = organize_checkpoint_notes(session_note_path)
         session_note_path = categorized_paths.get(session_id, session_note_path)
         category_details = ", ".join(
             f"{category}={count}" for category, count in sorted(category_report["categories"].items())

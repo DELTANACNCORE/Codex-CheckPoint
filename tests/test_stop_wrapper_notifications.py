@@ -96,16 +96,18 @@ class StopWrapperNotificationTest(unittest.TestCase):
                 f"所在目录：{relative_directory}",
             )),
         )
+        self.assertNotIn("尚未归类", payload["systemMessage"])
 
     def test_stop_falls_back_to_absolute_output_when_location_line_is_missing(self) -> None:
-        relative_note = "Codex工作记录/会话断点/网络连接.md"
+        relative_note = "Codex工作记录/会话断点/未分类对话/网络连接.md"
         absolute_note = self.vault / relative_note
         result = self.run_wrapper(f"[obsidian-hook] Session checkpoint written: {absolute_note}")
 
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         payload = json.loads(result.stdout)
         self.assertIn(f"断点文件：{relative_note}", payload["systemMessage"])
-        self.assertIn("所在目录：Codex工作记录/会话断点/", payload["systemMessage"])
+        self.assertIn("所在目录：Codex工作记录/会话断点/未分类对话/", payload["systemMessage"])
+        self.assertIn("当前断点尚未归类。调用 `$checkpoint` 进行归类。", payload["systemMessage"])
 
     def test_index_only_or_prompt_submit_write_does_not_emit_stop_notice(self) -> None:
         indexed = self.run_wrapper("[obsidian-hook] Session indexed without checkpoint: 2/5 rounds")
@@ -113,8 +115,8 @@ class StopWrapperNotificationTest(unittest.TestCase):
             "\n".join((
                 "[obsidian-hook] Session checkpoint written: /tmp/ignored.md",
                 "[obsidian-hook] Session checkpoint location: "
-                "vault-relative=Codex工作记录/会话断点/ignored.md; "
-                "folder=Codex工作记录/会话断点/",
+                "vault-relative=Codex工作记录/会话断点/未分类对话/ignored.md; "
+                "folder=Codex工作记录/会话断点/未分类对话/",
             )),
             event_name="UserPromptSubmit",
         )
@@ -169,6 +171,8 @@ class StopWrapperNotificationTest(unittest.TestCase):
         directory = lines[2].removeprefix("所在目录：")
         self.assertTrue((self.vault / note_path).is_file())
         self.assertEqual(Path(note_path).parent.as_posix() + "/", directory)
+        self.assertEqual(Path(note_path).parent.as_posix(), "Codex工作记录/会话断点/未分类对话")
+        self.assertEqual(lines[3], "当前断点尚未归类。调用 `$checkpoint` 进行归类。")
 
 
 if __name__ == "__main__":

@@ -12,4 +12,4 @@ Long-term experience is user-controlled core knowledge. Create or replace `长�
 
 When a relevant long-term experience document is reused in a new task or another project, tell the user at the beginning of the reply which document is being reused. The document can then be used as compact context.
 
-Automatic checkpoint writes must produce a user-visible Stop-hook notification only after `Session checkpoint written` is present. The notification must state the vault-relative checkpoint file and its parent directory. Index-only sessions and skipped writes must remain silent.
+Automatic checkpoint writes must produce a user-visible Stop-hook notification only after `Session checkpoint written` is present. The notification must state the vault-relative checkpoint file and its parent directory. When the note remains in `Codex工作记录/会话断点/未分类对话/`, it must also state that the checkpoint is unclassified and direct the user to `$checkpoint` for classification. Manual classification must process only this directory and the current manually rechecked session; existing categorized sessions remain untouched.

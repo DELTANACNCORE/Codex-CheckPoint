@@ -32,6 +32,7 @@ CHECKPOINT_LOCATION = re.compile(
     r"vault-relative=(?P<path>.+?);\s*folder=(?P<folder>[^\r\n]+)$",
     re.MULTILINE,
 )
+UNCLASSIFIED_CHECKPOINT_DIRECTORY = "Codex工作记录/会话断点/未分类对话"
 
 
 def _log(stage: str, **fields):
@@ -126,11 +127,15 @@ def _checkpoint_written_notice(output: str) -> str:
         except ValueError:
             note_path = str(absolute_path)
             directory = str(absolute_path.parent) + os.sep
-    return "\n".join((
+    lines = [
         "本次对话已写入会话断点。",
         f"断点文件：{note_path}",
         f"所在目录：{directory}",
-    ))
+    ]
+    normalized_directory = directory.replace("\\", "/").strip().strip("/")
+    if normalized_directory == UNCLASSIFIED_CHECKPOINT_DIRECTORY:
+        lines.append("当前断点尚未归类。调用 `$checkpoint` 进行归类。")
+    return "\n".join(lines)
 
 
 def main():

@@ -12,7 +12,7 @@ This project is based on [hjm4839-coder/checkpoint](https://github.com/hjm4839-c
 
 ## 功能 / Features
 
-- 自动断点：首次会话断点写入 `Codex工作记录/会话断点/` 顶层，已有断点后续保持原位置更新。标题优先采用可用的 Codex 会话标题，再回退到跨阶段的助手结论；`title_baseline` 会保护用户在 Obsidian 中改过的标题。自动 hook 不会触发分类或移动历史文件；手动 checkpoint 只修复自动生成的回执、长问句和依赖上下文的机械标题，再读取全部已保存会话后统一归类。 Stop hook 成功写入后会提示最终断点文件和目录，索引记录或跳过写入时保持静默。 Automatic checkpoints create new notes at the top level of `Codex工作记录/会话断点/` and preserve existing note locations on later updates. Titles prefer a usable Codex thread title, then fall back to cross-stage assistant conclusions; `title_baseline` protects titles changed in Obsidian. Automatic hooks never classify or move history. Manual checkpoint repairs only automatic receipts, long questions, and context-dependent mechanical titles before reading every saved session and classifying all notes together. After a successful Stop-hook write, the user receives the final checkpoint file and directory; index-only and skipped writes stay silent.
+- 自动断点：新会话写入 `Codex工作记录/会话断点/未分类对话/`，已有断点后续保持原位置更新。标题优先采用可用的 Codex 会话标题，再回退到跨阶段的助手结论；`title_baseline` 会保护用户在 Obsidian 中改过的标题。自动 hook 不会触发分类或移动历史文件；手动 checkpoint 只修复自动生成的回执、长问句和依赖上下文的机械标题，只整理未分类对话和当前重新检查的会话。 Stop hook 成功写入后会提示最终断点文件和目录；未分类断点会提示调用 `$checkpoint` 归类，索引记录或跳过写入时保持静默。 Automatic checkpoints create new notes in `Codex工作记录/会话断点/未分类对话/` and preserve existing note locations on later updates. Titles prefer a usable Codex thread title, then fall back to cross-stage assistant conclusions; `title_baseline` protects titles changed in Obsidian. Automatic hooks never classify or move history. Manual checkpoint repairs only automatic receipts, long questions, and context-dependent mechanical titles, then organizes only unclassified notes and the current rechecked session. After a successful Stop-hook write, the user receives the final checkpoint file and directory; an unclassified note directs the user to `$checkpoint` for classification, while index-only and skipped writes stay silent.
 - 会话隔离：hook 事件只有在 session 与 rollout 一一匹配且 vault 根目录包含 `.obsidian` 时才允许写入；缺少匹配 rollout 的内部或环境会话会直接跳过，绝不借用最近的其他会话。 Session isolation: hook events write only when their session matches a rollout and the vault root contains `.obsidian`; internal or ambient events without a matching rollout are skipped and never borrow another session.
 - 断点清理：`synthesize --cleanup-checkpoints` 会先以标题为主扫描伪对话、重复副本和机械标题。默认只报告；`--apply-cleanup` 仅在用户确认后删除无 rollout 的高置信候选、修复可推导的标题，并同步每日索引。两条真实会话即使相似也只报告。 Checkpoint cleanup: `synthesize --cleanup-checkpoints` first scans for pseudo conversations, duplicate copies, and mechanical titles with title-first matching. It only reports by default; after user confirmation, `--apply-cleanup` removes high-confidence candidates without rollouts, repairs derivable titles, and synchronizes daily indexes. Similar rollout-backed sessions are reported only.
 - 跨日索引：同日会话首行使用真实对话开始时间，第二行显示 session 更新；跨日会话在首日和更新日均以 session 更新时间为首行，第二行标注原始对话时间。 Cross-day indexes show the real conversation start time and session update on the same day. For cross-day sessions, both the first and update day use the session update time first and label the original conversation time below.
@@ -26,6 +26,7 @@ This project is based on [hjm4839-coder/checkpoint](https://github.com/hjm4839-c
 ## V0.6.2 / 版本 0.6.2
 
 - 自动写入提醒：Stop hook 在真实写入会话断点后向用户显示 vault 相对文件路径和目录。短会话仅写入每日索引、无匹配 rollout 或其他跳过情形不会产生误报。 Automatic write notification: after a real session-checkpoint write, the Stop hook shows the user the vault-relative file path and directory. Short index-only sessions, missing rollouts, and other skipped writes do not produce a false notice.
+- 未分类暂存与受限归类：新自动断点写入 `Codex工作记录/会话断点/未分类对话/`。手动 `$checkpoint` 只整理未分类、遗留顶层断点和当前重新检查的会话，已分类历史保持原样；同标题冲突仍留在未分类目录。 Unclassified staging and limited classification: new automatic checkpoints are written to `Codex工作记录/会话断点/未分类对话/`. Manual `$checkpoint` organizes only unclassified notes, legacy top-level notes, and the current rechecked session; categorized history remains unchanged, and title collisions remain in the unclassified directory.
 
 ## V0.6.1 / 版本 0.6.1
 
@@ -169,7 +170,7 @@ vault/
 └── Codex工作记录/
     ├── 会话索引/YYYY-MM-DD.md
     └── 会话断点/
-        ├── <自动断点主题>.md
+        ├── 未分类对话/<自动断点主题>.md
         └── <分类>/<手动整理后的断点主题>.md
 ```
 

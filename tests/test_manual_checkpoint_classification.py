@@ -23,6 +23,11 @@ INTERVIEW_SESSION = "44444444-4444-4444-4444-444444444444"
 RECOVERY_SESSION = "55555555-5555-5555-5555-555555555555"
 TITLE_SESSION = "66666666-6666-6666-6666-666666666666"
 MANUAL_TITLE_SESSION = "77777777-7777-7777-7777-777777777777"
+RECHECK_SESSION = "12121212-1212-1212-1212-121212121212"
+PENDING_SESSION = "13131313-1313-1313-1313-131313131313"
+COLLISION_ONE_SESSION = "14141414-1414-1414-1414-141414141414"
+COLLISION_TWO_SESSION = "15151515-1515-1515-1515-151515151515"
+LEGACY_SESSION = "16161616-1616-1616-1616-161616161616"
 
 
 def response(role: str, text: str) -> dict:
@@ -171,9 +176,11 @@ session_ids: ["{session_id}"]
         self.assertEqual(knowledge_result.returncode, 0, knowledge_result.stderr + knowledge_result.stdout)
 
         note_dir = self.vault / "Codex工作记录" / "会话断点"
-        self.assertEqual(len(list(note_dir.glob("*.md"))), 2)
-        self.assertEqual(self.note_for_session(DOCKER_SESSION).parent, note_dir)
-        self.assertEqual(self.note_for_session(KNOWLEDGE_SESSION).parent, note_dir)
+        unclassified_dir = note_dir / "未分类对话"
+        self.assertEqual(list(note_dir.glob("*.md")), [])
+        self.assertEqual(len(list(unclassified_dir.glob("*.md"))), 2)
+        self.assertEqual(self.note_for_session(DOCKER_SESSION).parent, unclassified_dir)
+        self.assertEqual(self.note_for_session(KNOWLEDGE_SESSION).parent, unclassified_dir)
 
         append_assistant_response(self.docker_rollout, "Docker 服务升级流程已完成并通过健康检查。")
         append_user_response(self.docker_rollout, "[$checkpoint](/Users/example/.codex/skills/checkpoint/SKILL.md)")
@@ -204,6 +211,7 @@ session_ids: ["{session_id}"]
         self.assertIn("# Docker 服务初始验证已完成", docker_note.read_text(encoding="utf-8"))
         self.assertIn('checkpoint_category: "系统与运维"', docker_note.read_text(encoding="utf-8"))
         self.assertEqual(list(note_dir.glob("*.md")), [])
+        self.assertEqual(list(unclassified_dir.glob("*.md")), [])
 
         index_text = "\n".join(
             path.read_text(encoding="utf-8")
@@ -253,6 +261,114 @@ session_ids: ["{session_id}"]
             "[[Codex工作记录/会话断点/系统与运维/",
             summary_path.read_text(encoding="utf-8"),
         )
+
+    def test_manual_checkpoint_only_reclassifies_unclassified_or_current_session(self) -> None:
+        recheck_rollout = self.sessions / f"rollout-2026-07-13T08-20-00-{RECHECK_SESSION}.jsonl"
+        pending_rollout = self.sessions / f"rollout-2026-07-13T08-30-00-{PENDING_SESSION}.jsonl"
+        write_rollout(
+            recheck_rollout,
+            "请升级 Docker 服务并检查健康状态",
+            "Docker 服务初始验证已完成。",
+        )
+        write_rollout(
+            pending_rollout,
+            "请整理 Obsidian 知识库 checkpoint 工作流",
+            "知识库断点配置已完成并通过检索验证。",
+        )
+
+        initial = self.run_hook(recheck_rollout, RECHECK_SESSION)
+        self.assertEqual(initial.returncode, 0, initial.stderr + initial.stdout)
+        first_manual = self.run_checkpoint_skill(RECHECK_SESSION)
+        self.assertEqual(first_manual.returncode, 0, first_manual.stderr + first_manual.stdout)
+        categorized_note = self.note_for_session(RECHECK_SESSION)
+        self.assertEqual(categorized_note.parent.name, "系统与运维")
+        categorized_note.write_text(
+            categorized_note.read_text(encoding="utf-8").replace(
+                'checkpoint_category: "系统与运维"',
+                'checkpoint_category: "保留分类"',
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        pending = self.run_hook(pending_rollout, PENDING_SESSION)
+        self.assertEqual(pending.returncode, 0, pending.stderr + pending.stdout)
+        self.assertEqual(self.note_for_session(PENDING_SESSION).parent.name, "未分类对话")
+        pending_manual = self.run_checkpoint_skill(PENDING_SESSION)
+        self.assertEqual(pending_manual.returncode, 0, pending_manual.stderr + pending_manual.stdout)
+        self.assertIn("Manual classification complete: scanned=1", pending_manual.stdout)
+        self.assertEqual(self.note_for_session(RECHECK_SESSION), categorized_note)
+        self.assertIn('checkpoint_category: "保留分类"', categorized_note.read_text(encoding="utf-8"))
+
+        recheck_manual = self.run_checkpoint_skill(RECHECK_SESSION, "--keep-title")
+        self.assertEqual(recheck_manual.returncode, 0, recheck_manual.stderr + recheck_manual.stdout)
+        self.assertIn("Manual classification complete: scanned=1", recheck_manual.stdout)
+        self.assertIn(
+            'checkpoint_category: "系统与运维"',
+            self.note_for_session(RECHECK_SESSION).read_text(encoding="utf-8"),
+        )
+
+    def test_automatic_name_collision_stays_in_unclassified_directory(self) -> None:
+        first_rollout = self.sessions / f"rollout-2026-07-13T08-40-00-{COLLISION_ONE_SESSION}.jsonl"
+        second_rollout = self.sessions / f"rollout-2026-07-13T08-50-00-{COLLISION_TWO_SESSION}.jsonl"
+        for rollout in (first_rollout, second_rollout):
+            write_rollout(
+                rollout,
+                "请检查 Docker 服务的健康状态",
+                "Docker 服务健康检查已完成。",
+            )
+
+        first = self.run_hook(first_rollout, COLLISION_ONE_SESSION)
+        second = self.run_hook(second_rollout, COLLISION_TWO_SESSION)
+        self.assertEqual(first.returncode, 0, first.stderr + first.stdout)
+        self.assertEqual(second.returncode, 0, second.stderr + second.stdout)
+        first_note = self.note_for_session(COLLISION_ONE_SESSION)
+        second_note = self.note_for_session(COLLISION_TWO_SESSION)
+        note_dir = self.vault / "Codex工作记录" / "会话断点"
+        self.assertEqual(first_note.parent.name, "未分类对话")
+        self.assertEqual(second_note.parent.name, "未分类对话")
+        self.assertNotEqual(first_note.name, second_note.name)
+        self.assertEqual(list(note_dir.glob("*.md")), [])
+
+    def test_manual_checkpoint_migrates_legacy_top_level_note_once(self) -> None:
+        legacy_rollout = self.sessions / f"rollout-2026-07-13T08-55-00-{LEGACY_SESSION}.jsonl"
+        pending_rollout = self.sessions / f"rollout-2026-07-13T08-56-00-{PENDING_SESSION}.jsonl"
+        write_rollout(
+            legacy_rollout,
+            "请检查 Docker 服务的健康状态",
+            "Docker 服务健康检查已完成。",
+        )
+        write_rollout(
+            pending_rollout,
+            "请整理 Obsidian 知识库 checkpoint 工作流",
+            "知识库断点配置已完成并通过检索验证。",
+        )
+        note_dir = self.vault / "Codex工作记录" / "会话断点"
+        note_dir.mkdir(parents=True)
+        legacy_note = note_dir / "旧版 Docker 健康检查.md"
+        legacy_note.write_text(
+            f'''---
+session_id: "{LEGACY_SESSION}"
+status: "completed"
+projects: []
+tags: []
+keywords: []
+aliases: []
+---
+
+# 旧版 Docker 健康检查
+''',
+            encoding="utf-8",
+        )
+
+        pending = self.run_hook(pending_rollout, PENDING_SESSION)
+        self.assertEqual(pending.returncode, 0, pending.stderr + pending.stdout)
+        result = self.run_checkpoint_skill(PENDING_SESSION)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("Manual classification complete: scanned=2", result.stdout)
+        self.assertFalse(legacy_note.exists())
+        self.assertEqual(self.note_for_session(LEGACY_SESSION).parent.name, "系统与运维")
+        self.assertEqual(list(note_dir.glob("*.md")), [])
 
     def test_hook_event_without_matching_rollout_is_skipped(self) -> None:
         result = subprocess.run(
