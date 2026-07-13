@@ -84,6 +84,7 @@ class ManualCheckpointClassificationTest(unittest.TestCase):
         self.sessions = self.home / ".codex" / "sessions" / "2026" / "07" / "13"
         self.hooks = self.home / ".codex" / "hooks"
         self.hooks.mkdir(parents=True)
+        shutil.copy2(REPO_ROOT / ".codex" / "redaction.py", self.home / ".codex" / "redaction.py")
         shutil.copy2(HOOK, self.hooks / "checkpoint.py")
         self.docker_rollout = self.sessions / f"rollout-2026-07-13T08-00-00-{DOCKER_SESSION}.jsonl"
         self.knowledge_rollout = self.sessions / f"rollout-2026-07-13T08-10-00-{KNOWLEDGE_SESSION}.jsonl"
@@ -509,13 +510,13 @@ title_source: "assistant"
         write_rollout(
             rollout,
             "配置图片搜索 MCP 并验证工具可用性",
-            "已发现并复用长期经验：sub2api Docker 更新 长期经验总结。图片搜索 MCP 已配置完成并通过验证。",
+            "已发现并复用 AI开发参考：sub2api Docker 更新 AI开发参考。图片搜索 MCP 已配置完成并通过验证。",
         )
         append_user_response(
             rollout,
             """# Response annotations:
 <response-annotations>
-[{"text":"已发现并复用长期经验：sub2api Docker 更新 长期经验总结"}]
+[{"text":"已发现并复用 AI开发参考：sub2api Docker 更新 AI开发参考"}]
 </response-annotations>
 ## My request for Codex:
 继续验证图片搜索工具
@@ -525,7 +526,7 @@ title_source: "assistant"
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         note_text = self.note_for_session(RECOVERY_SESSION).read_text(encoding="utf-8")
         self.assertIn("图片搜索 MCP 已配置完成并通过验证", note_text)
-        self.assertNotIn("已发现并复用长期经验", note_text)
+        self.assertNotIn("已发现并复用 AI开发参考", note_text)
         self.assertNotIn("Response annotations", note_text)
 
     def test_internal_handoff_summary_does_not_pollute_checkpoint(self) -> None:

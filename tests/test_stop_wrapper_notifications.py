@@ -27,6 +27,7 @@ class StopWrapperNotificationTest(unittest.TestCase):
         self.vault = self.root / "vault"
         self.vault.mkdir()
         (self.vault / ".obsidian").mkdir()
+        shutil.copy2(REPO_ROOT / ".codex" / "redaction.py", self.home / ".codex" / "redaction.py")
         shutil.copy2(WRAPPER, self.hooks / "stop-wrapper.py")
         (self.hooks / "retrieve.py").write_text(
             "import sys\n"

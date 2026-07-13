@@ -17,9 +17,10 @@ This project is based on [hjm4839-coder/checkpoint](https://github.com/hjm4839-c
 - 断点清理：`synthesize --cleanup-checkpoints` 会先以标题为主扫描伪对话、重复副本和机械标题。默认只报告；`--apply-cleanup` 仅在用户确认后删除无 rollout 的高置信候选、修复可推导的标题，并同步每日索引。两条真实会话即使相似也只报告。 Checkpoint cleanup: `synthesize --cleanup-checkpoints` first scans for pseudo conversations, duplicate copies, and mechanical titles with title-first matching. It only reports by default; after user confirmation, `--apply-cleanup` removes high-confidence candidates without rollouts, repairs derivable titles, and synchronizes daily indexes. Similar rollout-backed sessions are reported only.
 - 跨日索引：同日会话首行使用真实对话开始时间，第二行显示 session 更新；跨日会话在首日和更新日均以 session 更新时间为首行，第二行标注原始对话时间。 Cross-day indexes show the real conversation start time and session update on the same day. For cross-day sessions, both the first and update day use the session update time first and label the original conversation time below.
 - 持续更新：有效对话达到阈值后，在新用户消息时刷新断点。 Continuous updates: a checkpoint is refreshed when a new user message arrives after the meaningful-round threshold.
-- 恢复注入：新任务可读取相关断点、项目总结和长期经验的短摘要；长期经验要求直接项目名或别名命中，或至少两个独立特征词命中，界面引用标注不会参与匹配。复用时，Codex 会先向用户说明文档来源。 Recovery injection: new tasks can receive compact context from relevant checkpoints, project summaries, and reusable experience. Long-term experience requires a direct project or alias match, or at least two independent identity terms; UI response annotations do not participate in matching. Codex announces the source before reuse.
+- 恢复注入：新任务可读取相关断点、项目总结和 AI开发参考的短摘要。AI开发参考要求直接项目名或别名命中，或至少两个独立特征词命中；Docker、运维等宽泛主题词不会单独触发，界面引用标注也不会参与匹配。复用时，Codex 会先向用户说明文档来源。 Recovery injection: new tasks can receive compact context from relevant checkpoints, project summaries, and AI development references. References require a direct project or alias match, or at least two independent identity terms; broad Docker or operations terms alone do not trigger reuse, and UI response annotations do not participate in matching. Codex announces the source before reuse.
 - 项目总结：独立项目固定写入 `项目总结/<项目名>.md`，同一会话涉及多个独立项目时合并为一篇并记录 `session_ids`。自动归属只接受仍存在、项目名一致且已记录当前 session 的单项目总结；历史写入、已删除文件和旧合并总结不会产生新项目关系。父项目目录需要用户明确确认归属关系。 Project summaries: independent projects use `项目总结/<项目名>.md`; multiple independent projects in one session are merged into one note with `session_ids`. Automatic ownership accepts only an existing single-project summary whose name and current session match; historical writes, deleted files, and older merged summaries cannot create project relationships. Parent-project directories require explicit user confirmation.
-- 长期经验：每次 `synthesize` 都会归档项目总结，并按会话长度提示是否值得提炼长期经验。只有用户明确授权或强制要求时才写入 `长期经验总结/<项目名>.md`；有效材料类别不足三类时必须再次询问。自动 hook 不会创建、覆盖或删除长期经验。 Long-term experience: every `synthesize` run archives the project summary and uses session length to recommend extraction. `长期经验总结/<项目名>.md` is written only with explicit user authorization or a forced request; fewer than three useful material categories requires another user decision. Automatic hooks never create, replace, or delete long-term experience.
+- AI开发参考：每次 `synthesize` 都会归档项目总结，并按会话长度提示是否值得提炼 AI开发参考。只有用户明确授权或强制要求时才写入 `AI开发参考/<项目名>.md`；有效材料类别不足三类时必须再次询问。自动 hook 不会创建、覆盖或删除 AI开发参考。旧 `长期经验总结/` 目录只提供读取兼容。 AI development reference: every `synthesize` run archives the project summary and uses session length to recommend extraction. `AI开发参考/<项目名>.md` is written only with explicit user authorization or a forced request; fewer than three useful material categories requires another user decision. Automatic hooks never create, replace, or delete AI development references. The former `长期经验总结/` directory remains read-compatible only.
+- 敏感信息脱敏：自动生成的断点、每日索引、项目总结、首页与 AI开发参考会替换常见 Bearer Token、API Key、访问令牌、密码、JWT、`sk-` 密钥、Cookie 和私钥内容。普通项目 Markdown 不会被扫描或改写。 Sensitive-information redaction: generated checkpoints, daily indexes, project summaries, the homepage, and AI development references replace common Bearer tokens, API keys, access tokens, passwords, JWTs, `sk-` keys, cookies, and private keys. Ordinary project Markdown files are neither scanned nor rewritten.
 - 搜索与合成：保留本地 `search` 与 `synthesize` skills；合成必须指定项目或标签。聚类合成额外要求用户确认范围和目标项目名，未确认的聚类不能写入知识库。 Search and synthesis: local `search` and `synthesize` skills remain available. Synthesis requires an explicit project or tag. Cluster synthesis also requires a user-confirmed scope and target project name; an unconfirmed cluster cannot write to the vault.
 - PreTool 提醒：写入项目文档前提示已有相关材料。 PreTool reminder: project-document writes are checked against existing material.
 
@@ -48,6 +49,7 @@ Prerequisites: Codex, Python 3, and an Obsidian vault. Enable `hooks = true` und
 git clone https://github.com/DELTANACNCORE/Codex-CheckPoint.git
 cd Codex-CheckPoint
 mkdir -p ~/.codex/hooks ~/.codex/skills
+cp .codex/redaction.py ~/.codex/redaction.py
 cp .codex/hooks/*.py ~/.codex/hooks/
 cp -R .codex/skills/checkpoint ~/.codex/skills/checkpoint
 cp -R .codex/skills/search ~/.codex/skills/search
@@ -102,17 +104,18 @@ https://github.com/DELTANACNCORE/Codex-CheckPoint.git
 
 1. 询问 Obsidian vault 路径；如果没有明确路径，不要继续。
 2. 克隆仓库到临时工作目录或用户指定目录。
-3. 将仓库 .codex/hooks/*.py 复制到 ~/.codex/hooks/。
-4. 将 checkpoint、search、synthesize 复制到 ~/.codex/skills/。
-5. 确保 ~/.codex/config.toml 的 [features] 包含 hooks = true。
-6. 读取并保留 ~/.codex/hooks.json 中已有的非本项目 hook；注册以下三个 hook：
+3. 将仓库 .codex/redaction.py 复制到 ~/.codex/redaction.py。
+4. 将仓库 .codex/hooks/*.py 复制到 ~/.codex/hooks/。
+5. 将 checkpoint、search、synthesize 复制到 ~/.codex/skills/。
+6. 确保 ~/.codex/config.toml 的 [features] 包含 hooks = true。
+7. 读取并保留 ~/.codex/hooks.json 中已有的非本项目 hook；注册以下三个 hook：
    - Stop: python3 ~/.codex/hooks/stop-wrapper.py --vault-root <vault-path>
    - UserPromptSubmit: python3 ~/.codex/hooks/stop-wrapper.py --vault-root <vault-path>
    - PreToolUse: python3 ~/.codex/hooks/pretool-wrapper.py --vault-root <vault-path>
-7. 将仓库 .codex/AGENTS.md 的项目归档规则合并到 ~/.codex/AGENTS.md，保留已有本地规则。
-8. 为复制后的 hook 添加可执行权限。
-9. 运行 python3 ~/.codex/skills/checkpoint/checkpoint.py --vault-root <vault-path> 进行验证。
-10. 报告 hooks.json 的实际修改、写入的断点路径和验证结果。不要输出令牌、rollout 内容或私有 vault 内容。
+8. 将仓库 .codex/AGENTS.md 的项目归档规则合并到 ~/.codex/AGENTS.md，保留已有本地规则。
+9. 为复制后的 hook 添加可执行权限。
+10. 运行 python3 ~/.codex/skills/checkpoint/checkpoint.py --vault-root <vault-path> 进行验证。
+11. 报告 hooks.json 的实际修改、写入的断点路径和验证结果。不要输出令牌、rollout 内容或私有 vault 内容。
 ```
 
 ```text
@@ -123,17 +126,18 @@ Enable the complete Codex and Obsidian knowledge workflow on this machine.
 
 1. Ask for the Obsidian vault path. Do not continue without an explicit path.
 2. Clone the repository into a temporary directory or a user-selected directory.
-3. Copy .codex/hooks/*.py into ~/.codex/hooks/.
-4. Copy checkpoint, search, and synthesize into ~/.codex/skills/.
-5. Ensure [features] in ~/.codex/config.toml contains hooks = true.
-6. Read and preserve unrelated hooks in ~/.codex/hooks.json, then register these hooks:
+3. Copy .codex/redaction.py into ~/.codex/redaction.py.
+4. Copy .codex/hooks/*.py into ~/.codex/hooks/.
+5. Copy checkpoint, search, and synthesize into ~/.codex/skills/.
+6. Ensure [features] in ~/.codex/config.toml contains hooks = true.
+7. Read and preserve unrelated hooks in ~/.codex/hooks.json, then register these hooks:
    - Stop: python3 ~/.codex/hooks/stop-wrapper.py --vault-root <vault-path>
    - UserPromptSubmit: python3 ~/.codex/hooks/stop-wrapper.py --vault-root <vault-path>
    - PreToolUse: python3 ~/.codex/hooks/pretool-wrapper.py --vault-root <vault-path>
-7. Merge the project-archiving rules from .codex/AGENTS.md into ~/.codex/AGENTS.md while preserving existing local rules.
-8. Add executable permission to copied hook files.
-9. Verify with python3 ~/.codex/skills/checkpoint/checkpoint.py --vault-root <vault-path>.
-10. Report the actual hooks.json changes, checkpoint path, and verification result. Do not expose tokens, rollout content, or private vault content.
+8. Merge the project-archiving rules from .codex/AGENTS.md into ~/.codex/AGENTS.md while preserving existing local rules.
+9. Add executable permission to copied hook files.
+10. Verify with python3 ~/.codex/skills/checkpoint/checkpoint.py --vault-root <vault-path>.
+11. Report the actual hooks.json changes, checkpoint path, and verification result. Do not expose tokens, rollout content, or private vault content.
 ```
 
 ## 日常使用 / Daily Use
@@ -144,12 +148,13 @@ Enable the complete Codex and Obsidian knowledge workflow on this machine.
 4. 需要查找知识时调用 search skill；需要跨会话整理时明确指定项目或标签。聚类整理只有在用户确认范围和目标项目后才可调用。 Invoke search to find knowledge and specify a project or tag when using synthesize. Cluster synthesis is available only after the user confirms the scope and target project.
 5. 需要清理伪对话或重复断点时，先运行 `synthesize --cleanup-checkpoints` 审阅候选；用户确认后再使用 `--apply-cleanup`。 To clean pseudo or duplicate checkpoints, first review candidates with `synthesize --cleanup-checkpoints`, then use `--apply-cleanup` after user confirmation.
 6. 接手项目时优先读取 `项目总结/<项目名>.md`；已确认的父项目才读取 `项目总结/<父项目>/项目总结.md`。 When resuming a project, read `项目总结/<项目名>.md` first; read `项目总结/<父项目>/项目总结.md` only for confirmed parent projects.
-7. 需要长期经验时明确调用 `synthesize` 并授权写入；普通 checkpoint 不会生成该文件。 Explicitly invoke `synthesize` and authorize the write for long-term experience; ordinary checkpoints never generate it.
+7. 需要 AI开发参考时明确调用 `synthesize` 并授权写入；普通 checkpoint 不会生成该文件。 Explicitly invoke `synthesize` and authorize the write for an AI development reference; ordinary checkpoints never generate it.
 
 ## 目录结构 / Repository Layout
 
 ```text
 .codex/
+├── redaction.py
 ├── hooks/
 │   ├── checkpoint.py
 │   ├── pretool.py
@@ -165,7 +170,7 @@ Enable the complete Codex and Obsidian knowledge workflow on this machine.
 ```text
 vault/
 ├── 知识库首页.md
-├── 长期经验总结/<项目名>.md
+├── AI开发参考/<项目名>.md
 ├── 项目总结/<项目名>.md
 └── Codex工作记录/
     ├── 会话索引/YYYY-MM-DD.md

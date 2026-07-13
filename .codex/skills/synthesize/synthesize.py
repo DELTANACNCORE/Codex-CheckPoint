@@ -12,6 +12,12 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+CODEX_ROOT = Path(__file__).resolve().parents[2]
+if str(CODEX_ROOT) not in sys.path:
+    sys.path.insert(0, str(CODEX_ROOT))
+
+from redaction import redact_sensitive_text
+
 
 VAULT_TIMEZONE = ZoneInfo("Asia/Shanghai")
 LINK_VAULT_ROOT: Path | None = None
@@ -34,6 +40,7 @@ SECTION_HEADINGS = [
     "已验证结果",
     "仍未完成",
     "可复用经验",
+    "AI开发参考",
     "避坑清单",
     "下次同类项目流程",
     "实际产出",
@@ -72,9 +79,9 @@ def parse_args():
     parser.add_argument("--sessions-root", help="Codex rollout 根目录，默认使用 $CODEX_HOME/sessions")
     parser.add_argument("--limit", type=int, default=6)
     parser.add_argument("--apply-cleanup", action="store_true", help="执行 --cleanup-checkpoints 的高置信清理")
-    parser.add_argument("--long-term", action="store_true", help="评估或写入用户授权的长期经验总结")
-    parser.add_argument("--user-approved", action="store_true", help="确认用户明确授权写入长期经验")
-    parser.add_argument("--replace-approved", action="store_true", help="确认用户明确授权覆盖已有长期经验")
+    parser.add_argument("--long-term", action="store_true", help="评估或写入用户授权的 AI开发参考")
+    parser.add_argument("--user-approved", action="store_true", help="确认用户明确授权写入 AI开发参考")
+    parser.add_argument("--replace-approved", action="store_true", help="确认用户明确授权覆盖已有 AI开发参考")
     return parser.parse_args()
 
 
@@ -406,7 +413,7 @@ def suggest_checkpoint_title(record: dict) -> str:
     conclusion = record["sections"].get("可直接续接的结论", "")
     for sentence in re.split(r"(?<=[。！？!?])\s*", conclusion):
         candidate = clean_title_candidate(sentence)
-        if is_usable_title_candidate(candidate) and not re.match(r"^(?:已发现并复用长期经验|本次对话已写入)", candidate):
+        if is_usable_title_candidate(candidate) and not re.match(r"^(?:已发现并复用(?:长期经验|\s*AI开发参考)|本次对话已写入)", candidate):
             return candidate
     return ""
 
@@ -694,7 +701,7 @@ def collect_actions(records: list[dict]) -> list[str]:
     items = collect_section_from_records(records, ["最佳实践", "本轮完成", "新一轮进展", "下次同类项目流程"], 8)
     if items:
         return items
-    return collect_section_from_records(records, ["可复用经验"], 6)
+    return collect_section_from_records(records, ["可复用经验", "AI开发参考"], 6)
 
 
 def collect_evidence(records: list[dict]) -> list[str]:
@@ -884,7 +891,7 @@ def remove_daily_index_entries(vault_root: Path, record: dict, records: list[dic
             kept.append(line)
         rewritten = "".join(kept)
         if rewritten != text:
-            index_path.write_text(rewritten, encoding="utf-8")
+            index_path.write_text(redact_sensitive_text(rewritten), encoding="utf-8")
     return removed
 
 
@@ -999,7 +1006,7 @@ def refresh_daily_index_link(vault_root: Path, session_id: str, new_path: Path) 
                 )
             changed = True
         if changed:
-            index_path.write_text("".join(lines), encoding="utf-8")
+            index_path.write_text(redact_sensitive_text("".join(lines)), encoding="utf-8")
 
 
 def rename_checkpoint_note(vault_root: Path, record: dict, new_title: str, records: list[dict]) -> Path | None:
@@ -1013,7 +1020,7 @@ def rename_checkpoint_note(vault_root: Path, record: dict, new_title: str, recor
     if aliases:
         updated = set_frontmatter_value(updated, "aliases", json.dumps(aliases, ensure_ascii=False))
     new_path = available_renamed_checkpoint_path(record, new_title)
-    current_path.write_text(updated, encoding="utf-8")
+    current_path.write_text(redact_sensitive_text(updated), encoding="utf-8")
     if new_path != current_path:
         current_path.rename(new_path)
 
@@ -1115,19 +1122,19 @@ def session_length_metrics(records: list[dict]) -> dict:
 
 
 def write_long_term_experience(args, vault_root: Path, project: str, selected: list[dict]) -> bool:
-    """只有用户显式授权时才写入长期经验；项目总结已在调用前完成。"""
+    """只有用户显式授权时才写入 AI开发参考；项目总结已在调用前完成。"""
     signals, quality = long_term_quality(selected)
-    print("长期经验质量评估：" + ("、".join(signals) if signals else "未发现有效核心材料"))
+    print("AI开发参考质量评估：" + ("、".join(signals) if signals else "未发现有效核心材料"))
     print(f"材料数：{quality['records']}；有效类别：{quality['signals']}。")
     if not args.user_approved:
-        print("项目总结已归档。长期经验仍需用户明确授权，当前未写入。")
+        print("项目总结已归档。AI开发参考仍需用户明确授权，当前未写入。")
         return False
     if quality["signals"] < 3:
-        print("材料类别不足三类，依据用户强制授权继续写入长期经验。")
-    experience_dir = vault_root / "长期经验总结"
+        print("材料类别不足三类，依据用户强制授权继续写入 AI开发参考。")
+    experience_dir = vault_root / "AI开发参考"
     target_path = experience_dir / f"{safe_filename(project)}.md"
     if target_path.exists() and not args.replace_approved:
-        print(f"已有长期经验：{target_path}。覆盖前需要用户明确授权，并加入 --replace-approved。")
+        print(f"已有 AI开发参考：{target_path}。覆盖前需要用户明确授权，并加入 --replace-approved。")
         return False
     experience_dir.mkdir(parents=True, exist_ok=True)
     selected_session_ids = []
@@ -1140,14 +1147,18 @@ def write_long_term_experience(args, vault_root: Path, project: str, selected: l
         f"date: {datetime.now(VAULT_TIMEZONE).strftime('%Y-%m-%d')}\n"
         f"project: {project}\n"
         "long_term_experience: true\n"
+        "ai_development_reference: true\n"
         "user_authorized: true\n"
         f"session_ids: {json.dumps(dedupe_texts(selected_session_ids), ensure_ascii=False)}\n"
-        f"tags: {json.dumps(dedupe_texts(['长期经验总结', '核心知识', project]), ensure_ascii=False)}\n"
+        f"tags: {json.dumps(dedupe_texts(['AI开发参考', '核心知识', project]), ensure_ascii=False)}\n"
         "---\n\n"
     )
-    title = args.title or f"{project} 长期经验总结"
-    target_path.write_text(frontmatter + synthesize_long_term_body(project, title, selected), encoding="utf-8")
-    print(f"长期经验路径: {target_path}")
+    title = args.title or f"{project} AI开发参考"
+    target_path.write_text(
+        redact_sensitive_text(frontmatter + synthesize_long_term_body(project, title, selected)),
+        encoding="utf-8",
+    )
+    print(f"AI开发参考路径: {target_path}")
     return True
 
 
@@ -1171,7 +1182,7 @@ def mark_source_sessions_archived(records: list[dict], target_path: Path, vault_
         updated = set_frontmatter_value(updated, "archive_document", json.dumps(archive_document, ensure_ascii=False))
         updated = re.sub(r"^\*\*状态\*\*:\s*.+$", "**状态**: 已知识归档", updated, count=1, flags=re.MULTILINE)
         updated = re.sub(r"^>\s*.+?\s*·\s*([0-9a-f-]{6,})$", r"> 已知识归档 · \1", updated, count=1, flags=re.MULTILINE)
-        path.write_text(updated, encoding="utf-8")
+        path.write_text(redact_sensitive_text(updated), encoding="utf-8")
         archived.append(path)
     return archived
 
@@ -1195,7 +1206,7 @@ def refresh_daily_index_status(vault_root: Path, archived_paths: list[Path]) -> 
                 lines[index] = re.sub(r"^(\|\s*[^|]+\|\s*)[^|]+", r"\1📚 ", line)
                 changed = True
             if changed:
-                index_path.write_text("".join(lines), encoding="utf-8")
+                index_path.write_text(redact_sensitive_text("".join(lines)), encoding="utf-8")
 
 
 def refresh_dashboard(vault_root: Path) -> None:
@@ -1234,7 +1245,7 @@ def main():
         print("--apply-cleanup 只能与 --cleanup-checkpoints 一起使用。", file=sys.stderr)
         sys.exit(2)
     if args.cleanup_checkpoints and args.long_term:
-        print("断点清理不能同时写入长期经验。", file=sys.stderr)
+        print("断点清理不能同时写入 AI开发参考。", file=sys.stderr)
         sys.exit(2)
     vault_root = Path(args.vault_root).expanduser().resolve()
     global LINK_VAULT_ROOT
@@ -1278,7 +1289,7 @@ def main():
         "---\n\n"
     )
     body = synthesize_body(project, title, selected)
-    target_path.write_text(frontmatter + body, encoding="utf-8")
+    target_path.write_text(redact_sensitive_text(frontmatter + body), encoding="utf-8")
     archived_paths = mark_source_sessions_archived(selected, target_path, vault_root)
     refresh_daily_index_status(vault_root, archived_paths)
     refresh_dashboard(vault_root)
@@ -1292,9 +1303,9 @@ def main():
         write_long_term_experience(args, vault_root, project, selected)
         refresh_dashboard(vault_root)
     elif metrics["is_long"]:
-        print("检测到长会话。项目总结已归档；请先询问用户是否需要提炼长期经验，未获得明确授权不得写入。")
+        print("检测到长会话。项目总结已归档；请先询问用户是否需要提炼 AI开发参考，未获得明确授权不得写入。")
     else:
-        print("会话长度不足以建议长期经验。项目总结已归档，未写入长期经验；用户仍可明确要求强制提炼。")
+        print("会话长度不足以建议 AI开发参考。项目总结已归档，未写入 AI开发参考；用户仍可明确要求强制提炼。")
 
 
 if __name__ == "__main__":

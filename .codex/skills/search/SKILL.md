@@ -5,9 +5,9 @@ description: Search the vault for project documents and Codex session checkpoint
 
 # Search Skill / 知识库搜索 Skill
 
-按关键词快速检索整个 Obsidian vault。`Codex工作记录/` 保存 Codex 会话断点和索引，`项目总结/` 保存项目材料，`长期经验总结/` 保存可复用结论。
+按关键词快速检索整个 Obsidian vault。`Codex工作记录/` 保存 Codex 会话断点和索引，`项目总结/` 保存项目材料，`AI开发参考/` 保存可复用结论。
 
-Search the complete Obsidian vault by keyword. `Codex工作记录/` stores Codex checkpoints and indexes, `项目总结/` stores project material, and `长期经验总结/` stores reusable conclusions.
+Search the complete Obsidian vault by keyword. `Codex工作记录/` stores Codex checkpoints and indexes, `项目总结/` stores project material, and `AI开发参考/` stores reusable conclusions.
 
 ## 建议请求 / Suggested Prompts
 

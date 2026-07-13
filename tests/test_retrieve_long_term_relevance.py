@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression coverage for relevant long-term experience retrieval."""
+"""Regression coverage for strictly relevant AI development reference retrieval."""
 
 import json
 import os
@@ -15,23 +15,23 @@ RETRIEVE = REPO_ROOT / ".codex" / "hooks" / "retrieve.py"
 CURRENT_SESSION = "11111111-1111-1111-1111-111111111111"
 
 
-class RetrieveLongTermRelevanceTest(unittest.TestCase):
+class RetrieveAIReferenceRelevanceTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.root = Path(self.temp_dir.name)
         self.home = self.root / "home"
         self.vault = self.root / "vault"
         (self.vault / ".obsidian").mkdir(parents=True)
-        experience_dir = self.vault / "长期经验总结"
-        experience_dir.mkdir()
-        (experience_dir / "sub2api.md").write_text(
+        reference_dir = self.vault / "AI开发参考"
+        reference_dir.mkdir()
+        (reference_dir / "sub2api.md").write_text(
             """---
 project: sub2api
-tags: ["长期经验总结", "核心知识", "Docker", "sub2api", "运维"]
+tags: ["AI开发参考", "核心知识", "Docker", "sub2api", "运维"]
 aliases: ["sub2api 更新", "sub2api Docker 升级"]
 ---
 
-# sub2api Docker 更新 长期经验总结
+# sub2api Docker 更新 AI开发参考
 
 ## 核心结论
 
@@ -88,12 +88,12 @@ external_projects: []
             encoding="utf-8",
         )
 
-    def test_response_annotation_does_not_reintroduce_quoted_experience(self) -> None:
+    def test_response_annotation_does_not_reintroduce_quoted_reference(self) -> None:
         self.write_current_checkpoint()
         output = self.run_retrieve(
             """# Response annotations:
 <response-annotations>
-[{"text":"已发现并复用长期经验：sub2api Docker 更新 长期经验总结"}]
+[{"text":"已发现并复用 AI开发参考：sub2api Docker 更新 AI开发参考"}]
 </response-annotations>
 ## My request for Codex:
 为什么这个无关经验一直出现？
@@ -101,15 +101,37 @@ external_projects: []
             CURRENT_SESSION,
         )
         self.assertIn("当前知识库清理会话", output)
-        self.assertNotIn("sub2api Docker 更新 长期经验总结", output)
+        self.assertNotIn("sub2api Docker 更新 AI开发参考", output)
 
-    def test_direct_project_reference_reuses_experience(self) -> None:
+    def test_direct_project_reference_reuses_ai_reference(self) -> None:
         output = self.run_retrieve("请检查 sub2api Docker 更新")
-        self.assertIn("sub2api Docker 更新 长期经验总结", output)
+        self.assertIn("已发现并复用 AI开发参考", output)
+        self.assertIn("sub2api Docker 更新 AI开发参考", output)
 
     def test_generic_docker_reference_does_not_reuse_experience(self) -> None:
         output = self.run_retrieve("Docker 服务怎么更新")
         self.assertEqual(output, "")
+
+    def test_legacy_directory_remains_read_compatible(self) -> None:
+        legacy_dir = self.vault / "长期经验总结"
+        legacy_dir.mkdir()
+        (legacy_dir / "旧项目.md").write_text(
+            """---
+project: 旧项目
+tags: ["长期经验总结", "核心知识", "旧项目"]
+aliases: ["旧项目部署"]
+---
+
+# 旧项目 长期经验总结
+
+## 核心结论
+
+旧项目仍可通过兼容读取使用。
+""",
+            encoding="utf-8",
+        )
+        output = self.run_retrieve("继续旧项目部署")
+        self.assertIn("旧项目 长期经验总结", output)
 
 
 if __name__ == "__main__":

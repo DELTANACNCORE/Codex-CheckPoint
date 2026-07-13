@@ -17,7 +17,8 @@ VAULT_ROOT = Path(os.environ.get("OBSIDIAN_VAULT", "~/obsidian/知识库")).expa
 WORK_DIR = VAULT_ROOT / "Codex工作记录"
 NOTES_DIR = WORK_DIR / "会话断点"
 PROJECTS_DIR = VAULT_ROOT / "项目总结"
-EXPERIENCE_DIR = VAULT_ROOT / "长期经验总结"
+REFERENCE_DIR = VAULT_ROOT / "AI开发参考"
+LEGACY_REFERENCE_DIR = VAULT_ROOT / "长期经验总结"
 HOMEPAGE = VAULT_ROOT / "知识库首页.md"
 SEARCH_SCRIPT = Path(__file__).resolve().parents[1] / "skills" / "search" / "search.py"
 MAX_CONTEXT_CHARS = 2200
@@ -28,12 +29,12 @@ RECOVERY_SECTIONS = (
     "实际产出",
 )
 PROJECT_SECTIONS = ("项目定位", "当前状态", "后续恢复入口")
-EXPERIENCE_SECTIONS = ("核心结论", "经典代码与配置", "常用指令", "操作方法", "完成路径", "避坑清单", "验收检查清单")
+REFERENCE_SECTIONS = ("核心结论", "经典代码与配置", "常用指令", "操作方法", "完成路径", "避坑清单", "验收检查清单")
 GENERIC_KEYWORDS = {
     "checkpoint", "codex", "hook", "obsidian", "知识库", "会话", "项目", "总结", "搜索", "检索",
 }
-EXPERIENCE_GENERIC_TERMS = GENERIC_KEYWORDS | {
-    "长期经验", "经验", "更新", "配置", "操作", "服务", "系统", "工具", "工作流", "验证", "检查",
+REFERENCE_GENERIC_TERMS = GENERIC_KEYWORDS | {
+    "长期经验", "经验", "ai开发参考", "开发参考", "参考", "更新", "配置", "操作", "服务", "系统", "工具", "工作流", "验证", "检查",
     "docker", "compose", "容器", "运维",
 }
 RECOVERY_INTENT = ("恢复", "继续", "接手", "上次", "重启", "断点", "checkpoint", "知识库", "项目总结")
@@ -267,15 +268,15 @@ def match_key(value: str) -> str:
     return re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", str(value or "").lower())
 
 
-def is_specific_experience_term(value: str) -> bool:
+def is_specific_reference_term(value: str) -> bool:
     key = match_key(value)
-    if key in EXPERIENCE_GENERIC_TERMS:
+    if key in REFERENCE_GENERIC_TERMS:
         return False
     return len(key) >= 3
 
 
-def long_term_match_score(path: Path, text: str, prompt: str) -> int:
-    """长期经验只接受稳定身份词或多个特征词，避免通用运维词把无关经验带入。"""
+def reference_match_score(path: Path, text: str, prompt: str) -> int:
+    """AI开发参考只接受稳定身份词或多个特征词，避免通用运维词把无关项目带入。"""
     prompt_key = match_key(prompt)
     if not prompt_key:
         return 0
@@ -285,7 +286,7 @@ def long_term_match_score(path: Path, text: str, prompt: str) -> int:
     strong_terms = [project, path.stem, *aliases]
     for term in strong_terms:
         key = match_key(term)
-        if is_specific_experience_term(term) and key in prompt_key:
+        if is_specific_reference_term(term) and key in prompt_key:
             return 100 + len(key)
 
     title = extract_h1(text, path.stem)
@@ -293,23 +294,38 @@ def long_term_match_score(path: Path, text: str, prompt: str) -> int:
     weak_terms = []
     for term in [title, *tags]:
         key = match_key(term)
-        if is_specific_experience_term(term) and key in prompt_key and key not in weak_terms:
+        if is_specific_reference_term(term) and key in prompt_key and key not in weak_terms:
             weak_terms.append(key)
     if len(weak_terms) < 2:
         return 0
     return sum(len(term) for term in weak_terms) + 20
 
 
-def render_long_term_experience(prompt: str) -> str:
-    """匹配长期经验，并要求 Codex 在复用前向用户说明来源。"""
-    if not EXPERIENCE_DIR.is_dir() or not prompt:
+def reference_note_paths() -> list[Path]:
+    """优先读取 AI开发参考，并为未迁移的旧目录保留只读兼容。"""
+    paths = []
+    canonical_stems = set()
+    if REFERENCE_DIR.is_dir():
+        for path in sorted(REFERENCE_DIR.glob("*.md")):
+            paths.append(path)
+            canonical_stems.add(path.stem)
+    if LEGACY_REFERENCE_DIR.is_dir():
+        for path in sorted(LEGACY_REFERENCE_DIR.glob("*.md")):
+            if path.stem not in canonical_stems:
+                paths.append(path)
+    return paths
+
+
+def render_ai_development_references(prompt: str) -> str:
+    """匹配 AI开发参考，并要求 Codex 在复用前向用户说明来源。"""
+    if not prompt:
         return ""
     candidates = []
-    for path in EXPERIENCE_DIR.glob("*.md"):
+    for path in reference_note_paths():
         text = read_text(path)
         if not text:
             continue
-        score = long_term_match_score(path, text, prompt)
+        score = reference_match_score(path, text, prompt)
         if score:
             candidates.append((score, path, text))
     if not candidates:
@@ -319,14 +335,14 @@ def render_long_term_experience(prompt: str) -> str:
     for _, path, text in sorted(candidates, key=lambda item: (-item[0], item[1].name))[:2]:
         title = extract_h1(text, path.stem)
         titles.append(title)
-        parts = [f"### 长期经验总结：{title}"]
-        for heading in EXPERIENCE_SECTIONS:
+        parts = [f"### AI开发参考：{title}"]
+        for heading in REFERENCE_SECTIONS:
             section = extract_section(text, heading)
             if section:
                 parts.append(f"#### {heading}\n{clamp(section, 420)}")
         blocks.append("\n\n".join(parts))
     notice = (
-        "长期经验复用要求：本轮回复开头先向用户说明“已发现并复用长期经验："
+        "AI开发参考复用要求：本轮回复开头先向用户说明“已发现并复用 AI开发参考："
         + "、".join(titles)
         + "”。随后才可使用下列内容；不得把它当作无提示的隐含上下文。"
     )
@@ -392,24 +408,24 @@ def main() -> None:
 
     session_id = str(event.get("session_id", "") or "")
     keywords = keywords_for(prompt, [])
-    experience = render_long_term_experience(prompt)
+    reference = render_ai_development_references(prompt)
     result = recovery_brief(session_id, prompt)
     if result:
-        if experience:
-            result = clamp(f"{experience}\n\n{result}", MAX_CONTEXT_CHARS)
+        if reference:
+            result = clamp(f"{reference}\n\n{result}", MAX_CONTEXT_CHARS)
         context = (
-            "以下是已从 Obsidian 读取的任务恢复包。若其中包含长期经验，严格遵循其复用提示，"
+            "以下是已从 Obsidian 读取的任务恢复包。若其中包含 AI开发参考，严格遵循其复用提示，"
             "先向用户说明再使用；只有恢复包缺少必要细节时才读取完整 rollout transcript：\n\n"
             f"{result}"
         )
     else:
-        result = experience
+        result = reference
         if not result and should_search_knowledge(prompt):
             result = search_knowledge(keywords)
         if not result:
             return
         context = (
-            "以下是本轮任务先行读取的知识库结论。若包含长期经验，严格遵循其复用提示，"
+            "以下是本轮任务先行读取的知识库结论。若包含 AI开发参考，严格遵循其复用提示，"
             "先向用户说明再使用；与当前问题无关时忽略：\n\n"
             f"{result}"
         )

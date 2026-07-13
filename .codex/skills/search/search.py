@@ -17,6 +17,7 @@ SUMMARY_SECTIONS = [
     "背景",
     "项目定位",
     "可复用经验",
+    "AI开发参考",
     "避坑清单",
     "可直接续接的结论",
     "已完成事项",
@@ -161,7 +162,7 @@ def score_text(record: dict, keywords: list[str]) -> int:
         score += 18
     if "项目总结" in record["title"]:
         score += 16
-    if "长期经验总结" in record["title"] or "可复用经验" in record["title"]:
+    if any(label in record["title"] for label in ("AI开发参考", "长期经验总结", "可复用经验")):
         score += 14
     if "知识合成" in record["tags"]:
         score += 10

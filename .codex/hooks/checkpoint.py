@@ -13,6 +13,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+CODEX_ROOT = Path(__file__).resolve().parents[1]
+if str(CODEX_ROOT) not in sys.path:
+    sys.path.insert(0, str(CODEX_ROOT))
+
+from redaction import redact_sensitive_text
+
 # 允许在 import 阶段前通过 CLI 覆盖 vault 路径，方便 Codex hook 直接传参。
 if "--vault-root" in sys.argv:
     idx = sys.argv.index("--vault-root")
@@ -39,10 +45,10 @@ PLANS_DIR = VAULT_ROOT / SPACE_NAME
 PLANS_DIR_STR = str(PLANS_DIR)
 INDEX_DIR = PLANS_DIR / "会话索引"       # 每日索引 YYYY-MM-DD.md
 NOTE_DIR = PLANS_DIR / "会话断点"         # 单条会话断点 <主题>.md（与会话索引分开）
-EXPERIENCE_DIR = PLANS_DIR / "可复用经验"  # 跨项目复用的经验摘要
+EXPERIENCE_DIR = PLANS_DIR / "AI开发参考"  # 跨项目复用的参考摘要
 PROJECTS_DIR = PLANS_DIR
 PROJECT_SUMMARY_NAME = "项目总结.md"      # 仅已确认父项目目录使用的汇总文件
-PROJECT_EXPERIENCE_SUFFIX = "长期经验总结.md"
+PROJECT_EXPERIENCE_SUFFIX = "AI开发参考.md"
 PROJECT_SUMMARY_MAX_CHARS = 18000
 AUTO_CHECKPOINT_MIN_ROUNDS = 5
 VAULT_TIMEZONE = ZoneInfo("Asia/Shanghai")
@@ -88,6 +94,8 @@ STATUS_MAP = {
 
 
 def _debug_value(value):
+    if isinstance(value, str):
+        return redact_sensitive_text(value)
     if isinstance(value, Path):
         return str(value)
     if isinstance(value, datetime):
@@ -158,7 +166,8 @@ PLANS_DIR = VAULT_ROOT / SPACE_NAME
 PLANS_DIR_STR = str(PLANS_DIR)
 INDEX_DIR = PLANS_DIR / "会话索引"
 NOTE_DIR = PLANS_DIR / "会话断点"
-EXPERIENCE_DIR = VAULT_ROOT / "长期经验总结"
+EXPERIENCE_DIR = VAULT_ROOT / "AI开发参考"
+LEGACY_EXPERIENCE_DIR = VAULT_ROOT / "长期经验总结"
 PROJECTS_DIR = VAULT_ROOT / "项目总结"
 UNCLASSIFIED_CHECKPOINT_DIR = NOTE_DIR / "未分类对话"
 
@@ -213,7 +222,7 @@ def _codex_thread_title(session_id: str) -> str:
                     continue
                 title = str(entry.get("thread_name", "")).strip()
                 if title and "\n" not in title and "\r" not in title:
-                    latest_title = title[:80]
+                    latest_title = redact_sensitive_text(title)[:80]
     except (OSError, json.JSONDecodeError):
         pass
     return latest_title
@@ -233,7 +242,7 @@ def _add_written_file(result: dict, file_path: str, plans_dir: Path = None, plan
     if plans_dir_str in abs_path:
         try:
             rel = Path(abs_path).relative_to(plans_dir)
-            if len(rel.parts) > 1 and rel.parts[0] not in ("会话索引", "会话断点", "可复用经验", "长期经验总结"):
+            if len(rel.parts) > 1 and rel.parts[0] not in ("会话索引", "会话断点", "可复用经验", "长期经验总结", "AI开发参考"):
                 result["written_files"].add(abs_path)
         except Exception:
             result["written_files"].add(abs_path)
@@ -267,6 +276,7 @@ def _add_written_file(result: dict, file_path: str, plans_dir: Path = None, plan
             and "Codex工作记录" not in rel.parts
             and "项目总结" not in rel.parts
             and "长期经验总结" not in rel.parts
+            and "AI开发参考" not in rel.parts
             and rel.parts[0] != ".obsidian"
             and path.suffix.lower() == ".md"
         ):
@@ -533,12 +543,12 @@ def extract_session_context(transcript_path: str) -> dict:
         return ""
 
     def add_user_message(text: str):
-        msg = _strip_noise_blocks(_normalize_user_message(text))
+        msg = redact_sensitive_text(_strip_noise_blocks(_normalize_user_message(text)))
         if msg:
             user_messages.append(msg)
 
     def add_assistant_text(text: str):
-        cleaned = _strip_noise_blocks(text)
+        cleaned = redact_sensitive_text(_strip_noise_blocks(text))
         if not cleaned:
             return
         assistant_count_local = len(all_assistant_parts)
@@ -1142,7 +1152,7 @@ def _assistant_recovery_candidates(updates, user_prompts=None) -> list[tuple[int
             else:
                 # 跨项目的历史说明会被错误拼入当前会话时，不能抢占恢复摘要。
                 score -= 18
-        if re.search(r"(?:已发现并复用长期经验|Script completed|Wall time)", text):
+        if re.search(r"(?:已发现并复用(?:长期经验|\s*AI开发参考)|Script completed|Wall time)", text):
             score -= 30
         candidates.append((score, index, text))
     return candidates
@@ -1311,8 +1321,8 @@ def _short_resume_text(text: str, limit: int = 1500) -> str:
         if line.strip().startswith(("[obsidian-hook]", "Script completed", "Wall time")):
             continue
         # 这是 retrieve 注入时的透明度提示，不属于会话结论；保留同一行其后的实际回答。
-        line = re.sub(r"^\s*已发现并复用长期经验：[^。！？!?]*(?:[。！？!?]\s*)?", "", line)
-        if not line.strip() or line.strip().startswith("长期经验复用要求："):
+        line = re.sub(r"^\s*已发现并复用(?:长期经验|\s*AI开发参考)：[^。！？!?]*(?:[。！？!?]\s*)?", "", line)
+        if not line.strip() or line.strip().startswith(("长期经验复用要求：", "AI开发参考复用要求：")):
             continue
         lines.append(line)
     cleaned = "\n".join(lines).strip()
@@ -1537,7 +1547,7 @@ def generate_session_note(session_id: str, ctx: dict, status: str, related: list
                 + "\n".join(lines)
                 + f"\n\n> 💡 **建议**：恢复此会话，要求 {PRODUCT_LABEL} 将方案写入 Obsidian。\n"
             )
-    return f"""---
+    return redact_sensitive_text(f"""---
 date: "{now.strftime('%Y-%m-%d')}"
 session_id: "{session_id}"
 status: "{status}"
@@ -1594,7 +1604,7 @@ title_source: {json.dumps(title_source, ensure_ascii=False)}
 ## 恢复
 
 回到 Codex 线程列表，打开 thread_id `{session_id}` 继续。
-"""
+""")
 
 
 def _compact_index_text(text: str, limit: int = 42) -> str:
@@ -1716,13 +1726,13 @@ def _normalize_daily_index_layout(index_path: Path) -> None:
         if "[[" not in cells[2]:
             cells[2] = _compact_index_text(cells[2])
         rewritten.append("| " + " | ".join(cells) + " |\n")
-    index_path.write_text("".join(rewritten), encoding="utf-8")
+    index_path.write_text(redact_sensitive_text("".join(rewritten)), encoding="utf-8")
 
 
 def _ensure_daily_index(index_path: Path) -> None:
     if not index_path.exists():
         index_path.parent.mkdir(parents=True, exist_ok=True)
-        index_path.write_text(_daily_index_header(index_path.stem), encoding="utf-8")
+        index_path.write_text(redact_sensitive_text(_daily_index_header(index_path.stem)), encoding="utf-8")
         return
     _normalize_daily_index_layout(index_path)
 
@@ -1744,7 +1754,7 @@ def _upsert_daily_index_entry(index_path: Path, session_id: str, index_date: str
     ]
     if not matching_rows:
         with index_path.open("a", encoding="utf-8") as handle:
-            handle.write(entry)
+            handle.write(redact_sensitive_text(entry))
         return
     selected_row = matching_rows[0]
     rewritten = []
@@ -1755,7 +1765,7 @@ def _upsert_daily_index_entry(index_path: Path, session_id: str, index_date: str
             continue
         else:
             rewritten.append(line)
-    index_path.write_text("".join(rewritten), encoding="utf-8")
+    index_path.write_text(redact_sensitive_text("".join(rewritten)), encoding="utf-8")
 
 
 def _remove_legacy_index_entries(index_dir: Path, session_id: str, keep_dates: set[str]) -> None:
@@ -1778,7 +1788,7 @@ def _remove_legacy_index_entries(index_dir: Path, session_id: str, keep_dates: s
                 continue
             rewritten.append(line)
         if changed:
-            index_path.write_text("".join(rewritten), encoding="utf-8")
+            index_path.write_text(redact_sensitive_text("".join(rewritten)), encoding="utf-8")
 
 
 def _conversation_time_from_context(ctx: dict, fallback: datetime) -> datetime:
@@ -1903,7 +1913,7 @@ def _repair_daily_index_links(index_dir: Path, replacements: dict):
             continue
         rewritten = _replace_wikilink_targets(text, replacements)
         if rewritten != text:
-            index_path.write_text(rewritten, encoding="utf-8")
+            index_path.write_text(redact_sensitive_text(rewritten), encoding="utf-8")
 
 
 def organize_checkpoint_notes(current_note_path: Path | None = None) -> tuple[dict, dict]:
@@ -1945,7 +1955,7 @@ def organize_checkpoint_notes(current_note_path: Path | None = None) -> tuple[di
         category_counts[category] = category_counts.get(category, 0) + 1
         updated_text = _upsert_frontmatter_string(text, "checkpoint_category", category)
         if updated_text != text:
-            note_path.write_text(updated_text, encoding="utf-8")
+            note_path.write_text(redact_sensitive_text(updated_text), encoding="utf-8")
         target_path = _available_category_path(note_path, category, session_id)
         if target_path.resolve() != note_path.resolve():
             note_path.rename(target_path)
@@ -2064,7 +2074,7 @@ def _read_project_docs(project: str) -> list:
                 for heading in (
                     "关键结论", "当前缺口", "实施路径", "已验证能力", "背景概览",
                     "最佳实践", "踩坑记录", "本轮完成", "已验证结果", "仍未完成",
-                    "可复用经验", "避坑清单", "下次同类项目流程", "当前能力",
+                    "可复用经验", "AI开发参考", "避坑清单", "下次同类项目流程", "当前能力",
                     "项目材料", "已验证闭环", "使用方式", "当前边界", "恢复入口"
                 )
             },
@@ -2136,7 +2146,7 @@ date: {today}
 project: {project}
 session_ids: {json.dumps(sorted(set(session_ids or [])), ensure_ascii=False)}
 tags: {json.dumps(unique_tags, ensure_ascii=False)}
-aliases: {json.dumps([project, "项目总结", "可复用经验", "经验摘要"], ensure_ascii=False)}
+aliases: {json.dumps([project, "项目总结", "AI开发参考", "经验摘要"], ensure_ascii=False)}
 {extra_lines}---
 """
 
@@ -2248,7 +2258,7 @@ def synthesize_project_summary(project: str, ctx: dict, session_note_path: Path)
 
 
 def update_project_knowledge(ctx: dict, session_note_path: Path):
-    """自动链路只维护项目总结；长期经验由 synthesize 的显式授权流程写入。"""
+    """自动链路只维护项目总结；AI开发参考由 synthesize 的显式授权流程写入。"""
     projects = sorted(ctx.get("projects", []))
     if not projects:
         return []
@@ -2283,8 +2293,10 @@ def update_project_knowledge(ctx: dict, session_note_path: Path):
         extra["group_confirmed"] = True
         extra["children"] = read_frontmatter_list(summary_path, "children")
     summary_path.write_text(
-        _frontmatter(["项目总结"], project, "项目总结", session_ids, **extra)
-        + "\n" + summary_body.strip() + "\n",
+        redact_sensitive_text(
+            _frontmatter(["项目总结"], project, "项目总结", session_ids, **extra)
+            + "\n" + summary_body.strip() + "\n"
+        ),
         encoding="utf-8",
     )
     written = [summary_path]
@@ -2303,6 +2315,21 @@ def _vault_link(path: Path, label: str) -> str:
 def update_navigation_notes():
     """首页直接列出项目与经验，不再生成额外导航笔记。"""
     return
+
+
+def _reference_document_paths() -> list[Path]:
+    """首页优先列出 AI开发参考，并兼容尚未迁移的旧目录。"""
+    paths = []
+    canonical_stems = set()
+    if EXPERIENCE_DIR.is_dir():
+        for path in sorted(EXPERIENCE_DIR.glob("*.md")):
+            paths.append(path)
+            canonical_stems.add(path.stem)
+    if LEGACY_EXPERIENCE_DIR.is_dir():
+        for path in sorted(LEGACY_EXPERIENCE_DIR.glob("*.md")):
+            if path.stem not in canonical_stems:
+                paths.append(path)
+    return paths
 
 
 def update_dashboard():
@@ -2372,10 +2399,9 @@ def update_dashboard():
                 doc_count += 1
             doc_count += 1
 
-    if EXPERIENCE_DIR.is_dir():
-        for experience in sorted(EXPERIENCE_DIR.glob("*.md")):
-            title = _extract_h1(_read_text_limited(experience, 1200), experience.stem)
-            experience_docs.append((experience, title))
+    for experience in _reference_document_paths():
+        title = _extract_h1(_read_text_limited(experience, 1200), experience.stem)
+        experience_docs.append((experience, title))
     experience_entries = [f"- {_vault_link(path, title)}" for path, title in experience_docs]
 
     completed = status_counts["completed"]
@@ -2418,16 +2444,16 @@ def update_dashboard():
 
 {chr(10).join(optional_entries)}
 
-恢复时读取所选断点和关联项目总结。长期经验存在匹配项时，回复会先向用户说明复用内容。"""
+恢复时读取所选断点和关联项目总结。AI开发参考存在匹配项时，回复会先向用户说明复用内容。"""
 
     latest_index = max(INDEX_DIR.glob("*.md"), default=None, key=lambda path: path.name)
     work_entry = _vault_link(latest_index, "Codex工作记录") if latest_index else "Codex工作记录暂无会话索引"
     if len(experience_docs) == 1:
-        experience_entry = _vault_link(experience_docs[0][0], "长期经验总结")
+        experience_entry = _vault_link(experience_docs[0][0], "AI开发参考")
     elif experience_entries:
-        experience_entry = f"长期经验总结共 {len(experience_entries)} 篇，见下方列表"
+        experience_entry = f"AI开发参考共 {len(experience_entries)} 篇，见下方列表"
     else:
-        experience_entry = "暂无长期经验总结"
+        experience_entry = "暂无 AI开发参考"
     project_entry = project_entries[0][2:] if project_entries else "暂无项目总结"
     dash = f"""# 知识库首页
 
@@ -2458,9 +2484,9 @@ def update_dashboard():
 
 {chr(10).join(project_entries) if project_entries else '暂无项目文档'}
 
-## 长期经验
+## AI开发参考
 
-{chr(10).join(experience_entries) if experience_entries else '暂无长期经验总结'}
+{chr(10).join(experience_entries) if experience_entries else '暂无 AI开发参考'}
 
 ## 待恢复会话
 
@@ -2474,7 +2500,7 @@ def update_dashboard():
 
 {" ".join(f'`{t}` ({c})' for t, c in hot_tags) if hot_tags else '暂无标签'}
 """
-    (VAULT_ROOT / HOMEPAGE_NAME).write_text(dash, encoding="utf-8")
+    (VAULT_ROOT / HOMEPAGE_NAME).write_text(redact_sensitive_text(dash), encoding="utf-8")
     _set_codex_root_order()
 
 
@@ -2484,6 +2510,7 @@ def _set_codex_root_order():
         return
     paths = (
         VAULT_ROOT / HOMEPAGE_NAME,
+        VAULT_ROOT / "AI开发参考",
         VAULT_ROOT / "长期经验总结",
         VAULT_ROOT / "项目总结",
         VAULT_ROOT / "Codex工作记录",
@@ -2783,7 +2810,7 @@ def main():
         session_note_path = candidate
     related = find_related_notes(ctx["tags"], session_note_path)
     note_content = generate_session_note(session_id, ctx, status, related)
-    session_note_path.write_text(note_content, encoding="utf-8")
+    session_note_path.write_text(redact_sensitive_text(note_content), encoding="utf-8")
     _debug_log(
         "write_success",
         session=session_id,
