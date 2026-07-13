@@ -62,6 +62,28 @@ CLEANUP_LOW_SIGNAL_TITLE_PATTERNS = (
     r"^(?:本次对话(?:项目)?已(?:写入|加入)|正在(?:写入|生成)).*",
     r"^(?:你这个感觉对|好的|可以|行|继续|重新开始|开始|完成|现在可用了吗|这个对话能用吗|那就先做第一步|请只回复(?:一句)?|第[一二三四五六七八九十0-9]+题|问题[一二三四五六七八九十0-9]*|verify|trust|bypass).*$",
 )
+PROJECT_IDENTITY_GENERIC_TOKENS = {
+    "ai",
+    "checkpoint",
+    "claude",
+    "codex",
+    "hook",
+    "skill",
+    "obsidian",
+    "项目",
+    "总结",
+    "方案",
+    "开发",
+    "工作流",
+    "工具",
+    "系统",
+    "配置",
+    "知识库",
+    "经验",
+    "参考",
+    "会话",
+    "迁到",
+}
 LONG_SESSION_MIN_PROMPTS = 20
 LONG_SESSION_MIN_CHARS = 12000
 
@@ -595,7 +617,11 @@ def project_identity_tokens(project: str) -> list[str]:
     expanded = []
     for token in tokens:
         expanded.extend(re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|[\u4e00-\u9fff]{2,}", token))
-    return [token.lower() for token in expanded if len(token) >= 2]
+    return [
+        token.lower()
+        for token in expanded
+        if len(token) >= 2 and token.casefold() not in PROJECT_IDENTITY_GENERIC_TOKENS
+    ]
 
 
 def record_matches_project(record: dict, project: str) -> bool:
@@ -607,7 +633,9 @@ def record_matches_project(record: dict, project: str) -> bool:
     if project.lower() in joined:
         return True
     identity_tokens = project_identity_tokens(project)
-    return len({token for token in identity_tokens if token in joined}) >= 2
+    # Generic product and workflow words appear in unrelated recovery receipts.
+    # Fuzzy selection needs two specific project identity terms.
+    return len(identity_tokens) >= 2 and len({token for token in identity_tokens if token in joined}) >= 2
 
 
 def select_records(records: list[dict], args, plans_dir: Path) -> tuple[str, list[dict], list[str]]:

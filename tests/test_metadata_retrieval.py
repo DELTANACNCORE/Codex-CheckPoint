@@ -207,6 +207,25 @@ aliases: ["自动网卡入口"]
             self.assertEqual(parse_frontmatter_list(refreshed, "keywords"), ["手工关键词"])
             self.assertEqual(parse_frontmatter_list(refreshed, "aliases"), ["手工入口"])
 
+            legacy = re.sub(r"^tags:.*$", 'tags: ["/", "obsidian", "知识库", "项目总结"]', refreshed, flags=re.MULTILINE)
+            legacy = re.sub(r"^keywords:.*$", 'keywords: ["Netplan"]', legacy, flags=re.MULTILINE)
+            legacy = re.sub(
+                r"^aliases:.*$",
+                'aliases: ["Netplan", "/", "obsidian", "知识库", "项目总结"]',
+                legacy,
+                flags=re.MULTILINE,
+            )
+            note.write_text(legacy, encoding="utf-8")
+
+            repaired = subprocess.run(command, env=env, text=True, capture_output=True, check=False)
+            self.assertEqual(repaired.returncode, 0, repaired.stderr + repaired.stdout)
+            repaired_text = note.read_text(encoding="utf-8")
+            self.assertEqual(parse_frontmatter_list(repaired_text, "tags"), [])
+            self.assertEqual(parse_frontmatter_list(repaired_text, "keywords"), ["Netplan"])
+            aliases = parse_frontmatter_list(repaired_text, "aliases")
+            self.assertIn("Netplan", aliases)
+            self.assertFalse({"/", "obsidian", "知识库", "项目总结"} & set(aliases))
+
 
 class SearchRankingTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -310,6 +329,86 @@ aliases: []
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
             self.assertIn("别名断点", result.stdout)
             self.assertNotIn("优先别名标题断点", result.stdout)
+
+
+class SynthesizeProjectSelectionTest(unittest.TestCase):
+    def test_project_selection_rejects_generic_checkpoint_and_codex_terms(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            vault = root / "vault"
+            home = root / "home"
+            note_dir = vault / "Codex工作记录" / "会话断点" / "未分类对话"
+            note_dir.mkdir(parents=True)
+            (vault / ".obsidian").mkdir()
+
+            target = note_dir / "迁移会话.md"
+            target.write_text(
+                """---
+session_id: "12121212-1212-1212-1212-121212121212"
+status: "completed"
+projects: ["checkpoint迁到Codex"]
+tags: ["codex/方案"]
+keywords: ["metadata"]
+aliases: ["checkpoint迁到Codex"]
+---
+
+# checkpoint 迁到 Codex
+
+**已记录用户消息**: 8
+
+## 可直接续接的结论
+
+- metadata 检索迁移已完成。
+
+## 已验证结果
+
+- 迁移测试已通过。
+""",
+                encoding="utf-8",
+            )
+            unrelated = note_dir / "无关会话.md"
+            unrelated.write_text(
+                """---
+session_id: "34343434-3434-3434-3434-343434343434"
+status: "completed"
+projects: []
+tags: []
+keywords: []
+aliases: []
+---
+
+# 普通 Codex checkpoint 设置
+
+**已记录用户消息**: 8
+
+## 可直接续接的结论
+
+- 这是无关会话，只包含常见的 Codex checkpoint 回执词。
+""",
+                encoding="utf-8",
+            )
+            env = {**os.environ, "HOME": str(home), "CODEX_HOME": str(home / ".codex")}
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SYNTHESIZE),
+                    "--vault-root",
+                    str(vault),
+                    "--project",
+                    "checkpoint迁到Codex",
+                ],
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn("已归档断点数: 1", result.stdout)
+            summary = (vault / "项目总结" / "checkpoint迁到Codex.md").read_text(encoding="utf-8")
+            self.assertIn("12121212-1212-1212-1212-121212121212", summary)
+            self.assertNotIn("34343434-3434-3434-3434-343434343434", summary)
+            self.assertIn('status: "completed"', unrelated.read_text(encoding="utf-8"))
+            self.assertNotIn("archive_document:", unrelated.read_text(encoding="utf-8"))
 
 
 class SynthesizeMetadataTest(unittest.TestCase):

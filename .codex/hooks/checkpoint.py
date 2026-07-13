@@ -929,6 +929,18 @@ def build_aliases(topic=None, project=None, tags=None, keywords=None, existing=N
     return metadata_values(existing_values, generated, limit=12)
 
 
+def is_legacy_generated_path_metadata(aliases, keywords, tags) -> bool:
+    """Recognize old aliases copied mechanically from generated path metadata."""
+    expected = metadata_values(keywords or [], tags or [])
+    actual = metadata_values(aliases or [])
+    if not expected or actual != expected:
+        return False
+    return any(
+        not is_valid_generated_metadata(value)
+        for value in [*(keywords or []), *(tags or []), *(aliases or [])]
+    )
+
+
 
 _FORBIDDEN_FILENAME_RE = re.compile(r'[/\\:*?"<>|\r\n\t]')
 # Unicode Box Drawing 块 (U+2500–U+257F) + Block Elements (U+2580–U+259F)
@@ -2861,6 +2873,14 @@ def main():
             ctx["checkpoint_category"] = existing_checkpoint_category
         # 常规刷新逐字段保留手工 metadata，只补齐尚未记录的字段。
         existing_category, existing_tags, existing_keywords, existing_aliases = _read_frontmatter_all(session_note_path)
+        if not force and is_legacy_generated_path_metadata(
+            existing_aliases,
+            existing_keywords,
+            existing_tags,
+        ):
+            existing_tags = metadata_values(existing_tags, filter_noise=True)
+            existing_keywords = metadata_values(existing_keywords, filter_noise=True)
+            existing_aliases = []
         if force:
             ctx["category"] = synth["category"]
             ctx["tags"] = synth["tags"]
