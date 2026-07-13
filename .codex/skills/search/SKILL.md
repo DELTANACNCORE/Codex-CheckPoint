@@ -1,6 +1,6 @@
 ---
 name: search
-description: >-
+description: |
   Search the vault for project documents and Codex session checkpoints.
   按关键词搜索 vault 中的项目文档和 Codex 会话断点。
 ---

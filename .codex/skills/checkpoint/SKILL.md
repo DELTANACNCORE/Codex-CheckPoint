@@ -1,6 +1,6 @@
 ---
 name: checkpoint
-description: >-
+description: |
   Save the current Codex session as an Obsidian recovery brief.
   将当前 Codex 会话保存为 Obsidian 恢复断点。
 ---

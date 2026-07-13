@@ -1,6 +1,6 @@
 ---
 name: synthesize
-description: >-
+description: |
   Combine related checkpoints into a knowledge document and review pseudo or duplicate checkpoints.
   跨会话聚合相关断点、生成知识文档并清理伪对话或重复断点。
 ---
