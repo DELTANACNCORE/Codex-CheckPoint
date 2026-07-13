@@ -17,6 +17,12 @@ CODEX_ROOT = Path(__file__).resolve().parents[1]
 if str(CODEX_ROOT) not in sys.path:
     sys.path.insert(0, str(CODEX_ROOT))
 
+from metadata import (
+    is_valid_generated_metadata,
+    metadata_leaf_values,
+    metadata_values,
+    parse_frontmatter_list,
+)
 from redaction import redact_sensitive_text
 
 # 允许在 import 阶段前通过 CLI 覆盖 vault 路径，方便 Codex hook 直接传参。
@@ -873,17 +879,17 @@ def synthesize_topic_and_tags(user_prompts, written_files=None, projects=None):
 
 def _fallback_tags_from_files(files):
     """LLM 失败时，从写/改的文件路径中提取标签和关键词。"""
-    SKIP = {"", "~", "home", "user", "users", "projects", "src", "code", "dev",
-            "desktop", "documents", "downloads", "tmp", "var", "opt", "etc", "usr",
-            "library", "applications", "hooks", "skills", "memory",
-            "checkpoint-convention", "readme-update-rule", "settings"}
     tags, keywords = [], []
     seen = set()
     for f in sorted(files):
-        for p in Path(f).parts:
+        parts = Path(f).parts
+        for index, p in enumerate(parts):
             p_clean = p.strip().lower()
+            previous = parts[index - 1].strip().lower() if index else ""
+            if previous == "worktrees":
+                continue
             base = p_clean.split(".")[0]  # 去扩展名
-            if not base or base in SKIP or base.startswith(".") or base.startswith("-"):
+            if not is_valid_generated_metadata(base):
                 continue
             if base not in seen:
                 seen.add(base)
@@ -894,11 +900,33 @@ def _fallback_tags_from_files(files):
     # 文件名作关键词（取最后有意义的）
     for f in sorted(files):
         stem = Path(f).stem.strip()
-        if stem and stem not in seen and stem not in SKIP:
-            seen.add(stem)
+        key = stem.casefold()
+        if is_valid_generated_metadata(stem) and key not in seen:
+            seen.add(key)
             if len(keywords) < 3:
                 keywords.append(stem)
     return tags[:5], keywords[:3]
+
+
+def build_checkpoint_keywords(keywords=None, tags=None) -> list[str]:
+    """Prefer supplied keywords and fall back to specific tag leaf terms."""
+    values = metadata_values(keywords or [], limit=3, filter_noise=True)
+    return values or metadata_leaf_values(tags or [], limit=3)
+
+
+def build_aliases(topic=None, project=None, tags=None, keywords=None, existing=None) -> list[str]:
+    """Preserve existing aliases and supplement new notes with stable terms."""
+    existing_values = metadata_values(existing or [])
+    generated = metadata_values(
+        topic,
+        project,
+        keywords or [],
+        tags or [],
+        metadata_leaf_values(tags or []),
+        limit=12,
+        filter_noise=True,
+    )
+    return metadata_values(existing_values, generated, limit=12)
 
 
 
@@ -1291,19 +1319,12 @@ def find_note_by_session(index_dir: Path, session_id: str):
 
 
 def read_frontmatter_list(path: Path, key: str):
-    """读取笔记 frontmatter 里某个 JSON 数组字段（如 tags/keywords）。无则返回 []。"""
+    """读取笔记 frontmatter 里的 JSON、分隔文本或 YAML 列表字段。"""
     try:
         text = path.read_text(encoding="utf-8")
     except Exception:
         return []
-    m = re.search(rf'^{key}:\s*(\[.*\])', text, re.MULTILINE)
-    if not m:
-        return []
-    try:
-        v = json.loads(m.group(1))
-        return [str(t) for t in v] if isinstance(v, list) else []
-    except Exception:
-        return []
+    return parse_frontmatter_list(text, key)
 
 
 
@@ -1486,6 +1507,14 @@ def generate_session_note(session_id: str, ctx: dict, status: str, related: list
     title_source = str(ctx.get("title_source") or "inferred").strip()
     checkpoint_category = str(ctx.get("checkpoint_category", "")).strip()
     checkpoint_category_line = f'checkpoint_category: "{checkpoint_category}"\n' if checkpoint_category else ""
+    keywords = ctx.get("keywords") or build_checkpoint_keywords(ctx.get("keywords"), ctx.get("tags"))
+    aliases = ctx.get("aliases") or build_aliases(
+        topic,
+        None,
+        ctx.get("tags"),
+        keywords,
+        ctx.get("aliases"),
+    )
     platform = "codex"
     archive_frontmatter = ""
     if ctx.get("knowledge_archived"):
@@ -1556,8 +1585,8 @@ projects: {json.dumps(sorted(ctx['projects']), ensure_ascii=False)}
 external_projects: {json.dumps(sorted(ctx.get('external_projects', [])), ensure_ascii=False)}
 category: {json.dumps(ctx.get('category', []), ensure_ascii=False)}
 {checkpoint_category_line}tags: {json.dumps(ctx.get('tags', []), ensure_ascii=False)}
-keywords: {json.dumps(ctx.get('keywords', []), ensure_ascii=False)}
-aliases: {json.dumps(ctx.get('keywords', []) + ctx.get('tags', []), ensure_ascii=False)}
+keywords: {json.dumps(keywords, ensure_ascii=False)}
+aliases: {json.dumps(aliases, ensure_ascii=False)}
 title_baseline: {json.dumps(title_baseline, ensure_ascii=False)}
 title_source: {json.dumps(title_source, ensure_ascii=False)}
 {archive_frontmatter}---
@@ -2132,21 +2161,43 @@ def _collect_project_material(project: str, ctx: dict, session_note_path: Path) 
     return material
 
 
-def _frontmatter(title_tags: list, project: str, kind: str, session_ids: list[str] = None, **extra) -> str:
+def _frontmatter(
+    title_tags: list,
+    project: str,
+    kind: str,
+    session_ids: list[str] = None,
+    keywords: list[str] = None,
+    aliases: list[str] = None,
+    **extra,
+) -> str:
     today = vault_now().strftime("%Y-%m-%d")
     tags = [PLAN_TAG, "知识库/自动总结", kind] + [t for t in title_tags if t]
-    # 去重但保持顺序
-    unique_tags = []
-    for t in tags:
-        if t not in unique_tags:
-            unique_tags.append(t)
+    unique_tags = metadata_values(tags)
+    unique_keywords = metadata_values(keywords or [], limit=8)
+    if not unique_keywords:
+        unique_keywords = metadata_values(
+            project,
+            metadata_leaf_values(unique_tags),
+            limit=8,
+            filter_noise=True,
+        )
+    unique_aliases = metadata_values(aliases or [], limit=12)
+    if not unique_aliases:
+        unique_aliases = build_aliases(
+            project,
+            project,
+            unique_tags,
+            unique_keywords,
+            ["项目总结", "AI开发参考", "经验摘要"],
+        )
     extra_lines = "".join(f"{key}: {json.dumps(value, ensure_ascii=False)}\n" for key, value in extra.items())
     return f"""---
 date: {today}
 project: {project}
 session_ids: {json.dumps(sorted(set(session_ids or [])), ensure_ascii=False)}
 tags: {json.dumps(unique_tags, ensure_ascii=False)}
-aliases: {json.dumps([project, "项目总结", "AI开发参考", "经验摘要"], ensure_ascii=False)}
+keywords: {json.dumps(unique_keywords, ensure_ascii=False)}
+aliases: {json.dumps(unique_aliases, ensure_ascii=False)}
 {extra_lines}---
 """
 
@@ -2284,6 +2335,24 @@ def update_project_knowledge(ctx: dict, session_note_path: Path):
 
     existing_sessions = read_frontmatter_list(summary_path, "session_ids")
     session_ids = sorted(set(existing_sessions + current_session_ids))
+    summary_keywords = read_frontmatter_list(summary_path, "keywords")
+    summary_aliases = read_frontmatter_list(summary_path, "aliases")
+    if not summary_keywords:
+        summary_keywords = metadata_values(
+            ctx.get("keywords", []),
+            project,
+            metadata_leaf_values(ctx.get("tags", [])),
+            limit=8,
+            filter_noise=True,
+        )
+    if not summary_aliases:
+        summary_aliases = build_aliases(
+            project,
+            project,
+            ctx.get("tags", []),
+            summary_keywords,
+            None,
+        )
     ctx_with_status = dict(ctx)
     ctx_with_status["status"] = ctx.get("status", "completed")
     summary_body = synthesize_project_summary(project, ctx_with_status, session_note_path)
@@ -2294,7 +2363,15 @@ def update_project_knowledge(ctx: dict, session_note_path: Path):
         extra["children"] = read_frontmatter_list(summary_path, "children")
     summary_path.write_text(
         redact_sensitive_text(
-            _frontmatter(["项目总结"], project, "项目总结", session_ids, **extra)
+            _frontmatter(
+                ["项目总结"],
+                project,
+                "项目总结",
+                session_ids,
+                keywords=summary_keywords,
+                aliases=summary_aliases,
+                **extra,
+            )
             + "\n" + summary_body.strip() + "\n"
         ),
         encoding="utf-8",
@@ -2643,20 +2720,17 @@ def _parse_cli():
 
 
 def _read_frontmatter_all(path):
-    """一趟读取笔记的 category/tags/keywords frontmatter 字段。"""
+    """一趟读取断点的分类、检索 metadata 字段。"""
     try:
         text = path.read_text(encoding="utf-8")
     except (FileNotFoundError, OSError):
-        return [], [], []
-    def _parse(key):
-        m = re.search(rf'^{key}:\s*(\[.*\])', text, re.MULTILINE)
-        if not m: return []
-        try:
-            v = json.loads(m.group(1))
-            return [str(t) for t in v] if isinstance(v, list) else []
-        except (json.JSONDecodeError, TypeError):
-            return []
-    return _parse("category"), _parse("tags"), _parse("keywords")
+        return [], [], [], []
+    return (
+        parse_frontmatter_list(text, "category"),
+        parse_frontmatter_list(text, "tags"),
+        parse_frontmatter_list(text, "keywords"),
+        parse_frontmatter_list(text, "aliases"),
+    )
 
 
 def main():
@@ -2785,16 +2859,17 @@ def main():
         existing_checkpoint_category = _frontmatter_string(existing_note_text, "checkpoint_category")
         if existing_checkpoint_category:
             ctx["checkpoint_category"] = existing_checkpoint_category
-        # tags/keywords：常规刷新保留既有元数据，明确 --force 时才重新综合。
-        existing_category, existing_tags, existing_keywords = _read_frontmatter_all(session_note_path)
-        if not force and existing_category and existing_tags and existing_keywords:
-            ctx["category"] = existing_category
-            ctx["tags"] = existing_tags
-            ctx["keywords"] = existing_keywords
+        # 常规刷新逐字段保留手工 metadata，只补齐尚未记录的字段。
+        existing_category, existing_tags, existing_keywords, existing_aliases = _read_frontmatter_all(session_note_path)
+        if force:
+            ctx["category"] = synth["category"]
+            ctx["tags"] = synth["tags"]
+            ctx["keywords"] = build_checkpoint_keywords(synth["keywords"], synth["tags"])
         else:
             ctx["category"] = existing_category or synth["category"]
             ctx["tags"] = existing_tags or synth["tags"]
-            ctx["keywords"] = existing_keywords or synth["keywords"]
+            ctx["keywords"] = existing_keywords or build_checkpoint_keywords(synth["keywords"], ctx["tags"])
+        ctx["aliases"] = existing_aliases
     else:
         # 新笔记优先采用 Codex 会话标题，再回退到完整对话中的助手结论。
         synth = synthesize_topic_and_tags(ctx["user_prompts"], ctx["written_files"], ctx["projects"])
@@ -2802,12 +2877,23 @@ def main():
         ctx["title_baseline"] = ctx["topic"]
         ctx["category"] = synth["category"]
         ctx["tags"] = synth["tags"]
-        ctx["keywords"] = synth["keywords"]
+        ctx["keywords"] = build_checkpoint_keywords(synth["keywords"], synth["tags"])
+        ctx["aliases"] = []
         fname = sanitize_filename(ctx["topic"])
         candidate = UNCLASSIFIED_CHECKPOINT_DIR / f"{fname}.md"
         if candidate.exists():
             candidate = UNCLASSIFIED_CHECKPOINT_DIR / f"{fname}-{session_id[:8]}.md"
         session_note_path = candidate
+    if not ctx.get("keywords"):
+        ctx["keywords"] = build_checkpoint_keywords(ctx.get("keywords"), ctx.get("tags"))
+    if not ctx.get("aliases"):
+        ctx["aliases"] = build_aliases(
+            ctx.get("topic"),
+            None,
+            ctx.get("tags"),
+            ctx.get("keywords"),
+            ctx.get("aliases"),
+        )
     related = find_related_notes(ctx["tags"], session_note_path)
     note_content = generate_session_note(session_id, ctx, status, related)
     session_note_path.write_text(redact_sensitive_text(note_content), encoding="utf-8")

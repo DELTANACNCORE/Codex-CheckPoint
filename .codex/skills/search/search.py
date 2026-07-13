@@ -2,10 +2,15 @@
 """Search Codex Obsidian notes with better ranking and summaries."""
 
 import argparse
-import json
 import re
 import sys
 from pathlib import Path
+
+CODEX_ROOT = Path(__file__).resolve().parents[2]
+if str(CODEX_ROOT) not in sys.path:
+    sys.path.insert(0, str(CODEX_ROOT))
+
+from metadata import metadata_values, parse_frontmatter_list
 
 
 SUMMARY_SECTIONS = [
@@ -35,12 +40,23 @@ LOW_SIGNAL_TITLE_PATTERNS = (
     r"\bbypass\b",
 )
 
+GENERIC_SEARCH_METADATA = {
+    "项目总结",
+    "ai开发参考",
+    "长期经验总结",
+    "经验摘要",
+    "核心知识",
+    "codex方案",
+    "知识库/自动总结",
+    "codex/方案",
+}
+
 
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("keywords", nargs="+")
     parser.add_argument("--vault-root", default=str(Path("~/obsidian/知识库").expanduser()))
-    parser.add_argument("--limit", type=int, default=8)
+    parser.add_argument("--limit", type=int, default=5)
     return parser.parse_args()
 
 
@@ -69,14 +85,7 @@ def extract_frontmatter_value(text: str, key: str) -> str:
 
 
 def extract_list(text: str, key: str) -> list[str]:
-    m = re.search(rf"^{re.escape(key)}:\s*(\[.*\])", text, re.MULTILINE)
-    if not m:
-        return []
-    try:
-        data = json.loads(m.group(1))
-    except Exception:
-        return []
-    return [str(x) for x in data] if isinstance(data, list) else []
+    return parse_frontmatter_list(text, key)
 
 
 def extract_block(text: str, heading: str) -> str:
@@ -118,7 +127,7 @@ def is_low_signal_title(title: str) -> bool:
 def is_sparse_doc(record: dict) -> bool:
     if record["kind"] != "归档文档":
         return False
-    if record["tags"] or record["category"] or record["keywords"]:
+    if record["tags"] or record["category"] or record["keywords"] or record["aliases"]:
         return False
     body = strip_frontmatter(record["text"])
     return len(normalize_space(body)) < 80
@@ -140,39 +149,55 @@ def build_search_corpus(text: str) -> str:
     return "\n".join(part for part in parts if part)
 
 
-def score_text(record: dict, keywords: list[str]) -> int:
-    score = 0
-    title = record["title"].lower()
-    corpus = record["corpus"].lower()
-    tags_joined = " ".join(record["tags"]).lower()
-    path_text = str(record["rel"]).lower()
+def _searchable_metadata(values: list[str]) -> list[str]:
+    return [
+        value for value in metadata_values(values)
+        if normalize_space(value).casefold() not in GENERIC_SEARCH_METADATA
+    ]
 
-    for kw in keywords:
-        key = kw.lower()
-        score += corpus.count(key)
-        score += title.count(key) * 8
-        score += tags_joined.count(key) * 5
-        score += path_text.count(key) * 4
 
+def _matching_terms(values: list[str], keywords: list[str]) -> list[str]:
+    hits = []
+    normalized_values = [normalize_space(value).casefold() for value in values if normalize_space(value)]
+    for keyword in metadata_values(keywords):
+        key = normalize_space(keyword).casefold()
+        if key and any(key in value for value in normalized_values):
+            hits.append(keyword)
+    return metadata_values(hits)
+
+
+def score_text(record: dict, keywords: list[str]) -> dict | None:
+    aliases = _matching_terms(_searchable_metadata(record["aliases"]), keywords)
+    metadata_keywords = _matching_terms(_searchable_metadata(record["keywords"]), keywords)
+    tags = _matching_terms(_searchable_metadata(record["tags"]), keywords)
+    title = _matching_terms([record["title"]], keywords)
+    body = _matching_terms([strip_frontmatter(record["text"])], keywords)
+
+    if aliases:
+        rank, label, matched = 4, "aliases", aliases
+    elif metadata_keywords:
+        rank, label, matched = 3, "keywords", metadata_keywords
+    elif tags:
+        rank, label, matched = 2, "tags", tags
+    elif title or body:
+        rank, label, matched = 1, "标题" if title else "正文", title or body
+    else:
+        return None
+
+    score = rank * 10000
+    score += len(matched) * 400
+    score += len(aliases) * 40 + len(metadata_keywords) * 30 + len(tags) * 20
     if record["kind"] == "归档文档":
-        score += 20
-    if len(record["rel"].parts) >= 3 and record["kind"] == "归档文档":
-        score += 12
-    if "更新日志" in record["title"]:
-        score += 18
-    if "项目总结" in record["title"]:
-        score += 16
-    if any(label in record["title"] for label in ("AI开发参考", "长期经验总结", "可复用经验")):
-        score += 14
-    if "知识合成" in record["tags"]:
         score += 10
     if record["status"] == "completed":
-        score += 4
+        score += 2
     if is_low_signal_title(record["title"]):
         score -= 10
-    if is_sparse_doc(record):
-        score -= 25
-    return score
+    return {
+        "score": score,
+        "match_label": label,
+        "matched_terms": matched,
+    }
 
 
 def summarize_hit(record: dict, keywords: list[str]) -> str:
@@ -225,6 +250,7 @@ def build_record(path: Path, rel: Path, text: str) -> dict:
         "tags": extract_list(text, "tags"),
         "category": extract_list(text, "category"),
         "keywords": extract_list(text, "keywords"),
+        "aliases": extract_list(text, "aliases"),
         "corpus": build_search_corpus(text),
     }
 
@@ -247,12 +273,16 @@ def main():
         if not text:
             continue
         record = build_record(path, rel, text)
-        if is_sparse_doc(record):
+        body_fallback = _matching_terms(
+            [record["title"], strip_frontmatter(record["text"])],
+            args.keywords,
+        )
+        if is_sparse_doc(record) and not body_fallback:
             continue
-        score = score_text(record, args.keywords)
-        if score <= 0:
+        match = score_text(record, args.keywords)
+        if not match:
             continue
-        record["score"] = score
+        record.update(match)
         record["summary"] = summarize_hit(record, args.keywords)
         matches.append(record)
 
@@ -269,20 +299,21 @@ def main():
     if archive:
         print("**归档文档**")
         for item in archive:
-            tag_text = f" · tags: {', '.join(item['tags'][:4])}" if item["tags"] else ""
+            match_text = f" · {item['match_label']} 命中: {', '.join(item['matched_terms'])}"
             link = f"[[{item['rel'].with_suffix('')}|{item['title']}]]"
-            print(f"- {link} — {item['summary']}{tag_text}")
+            print(f"- {link}{match_text} — {item['summary']}")
         print()
     if notes:
         print("**断点笔记**")
         for item in notes:
             extra = " · ".join(part for part in (item["date"], item["status"]) if part)
             summary = f" — {item['summary']}" if item["summary"] else ""
+            match_text = f" · {item['match_label']} 命中: {', '.join(item['matched_terms'])}"
             link = f"[[{item['rel'].with_suffix('')}|{item['title']}]]"
             if extra:
-                print(f"- {link} — {extra}{summary}")
+                print(f"- {link} — {extra}{match_text}{summary}")
             else:
-                print(f"- {link}{summary}")
+                print(f"- {link}{match_text}{summary}")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
-# Codex CheckPoint V0.7.0
-*Codex 会话断点 V0.7.0*
+# Codex CheckPoint V0.8.0
+*Codex 会话断点 V0.8.0*
 
 为 Codex 与 Obsidian 提供会话断点、持续恢复、项目总结和知识检索。仓库只包含运行时 hook、skills、README、许可证和忽略规则，不包含安装、迁移、打包或解包脚本。
 
@@ -37,6 +37,16 @@ This project is based on [hjm4839-coder/checkpoint](https://github.com/hjm4839-c
   Search and synthesis: local `search` and `synthesize` skills remain available. Synthesis requires an explicit project or tag. Cluster synthesis also requires a user-confirmed scope and target project name; an unconfirmed cluster cannot write to the vault.
 - PreTool 提醒：写入项目文档前提示已有相关材料。\
   PreTool reminder: project-document writes are checked against existing material.
+
+## V0.8.0
+*Version 0.8.0*
+
+- metadata 兼容与补全：新断点、项目总结和经用户授权写入的 AI开发参考现支持 JSON 数组、逗号分隔值与 YAML 列表形式的 `aliases` 和 `keywords`。人工 metadata 会被保留，生成值会过滤用户目录、临时目录与 `worktrees` 等路径噪声。\
+  Metadata compatibility and enrichment: new checkpoints, project summaries, and user-authorized AI development references support JSON arrays, comma-separated values, and YAML lists for `aliases` and `keywords`. Manual metadata is preserved, while generated values filter user directories, temporary directories, `worktrees`, and other path noise.
+- 精确检索：`search` 依次按 `aliases`、`keywords`、`tags`、标题或正文排序，并保留旧 Markdown 的正文兼容检索。新任务的恢复匹配也会使用 aliases。\
+  Precise retrieval: `search` ranks `aliases`, `keywords`, `tags`, then title or body matches and retains body fallback for older Markdown. New-task recovery matching also uses aliases.
+- 授权边界保持不变：metadata 补全不会触发 AI开发参考的创建、替换、删除或授权。该文件仍只由用户明确授权的 `$synthesize` 写入。\
+  Authorization boundary unchanged: metadata enrichment never creates, replaces, deletes, or authorizes an AI development reference. Such files remain writable only through explicitly authorized `$synthesize`.
 
 ## V0.7.0
 *Version 0.7.0*
@@ -84,6 +94,7 @@ git clone https://github.com/DELTANACNCORE/Codex-CheckPoint.git
 cd Codex-CheckPoint
 mkdir -p ~/.codex/hooks ~/.codex/skills
 cp .codex/redaction.py ~/.codex/redaction.py
+cp .codex/metadata.py ~/.codex/metadata.py
 cp .codex/hooks/*.py ~/.codex/hooks/
 cp -R .codex/skills/checkpoint ~/.codex/skills/checkpoint
 cp -R .codex/skills/search ~/.codex/skills/search
@@ -140,17 +151,18 @@ https://github.com/DELTANACNCORE/Codex-CheckPoint.git
 1. 询问 Obsidian vault 路径；如果没有明确路径，不要继续。
 2. 克隆仓库到临时工作目录或用户指定目录。
 3. 将仓库 .codex/redaction.py 复制到 ~/.codex/redaction.py。
-4. 将仓库 .codex/hooks/*.py 复制到 ~/.codex/hooks/。
-5. 将 checkpoint、search、synthesize 复制到 ~/.codex/skills/。
-6. 确保 ~/.codex/config.toml 的 [features] 包含 hooks = true。
-7. 读取并保留 ~/.codex/hooks.json 中已有的非本项目 hook；注册以下三个 hook：
+4. 将仓库 .codex/metadata.py 复制到 ~/.codex/metadata.py。
+5. 将仓库 .codex/hooks/*.py 复制到 ~/.codex/hooks/。
+6. 将 checkpoint、search、synthesize 复制到 ~/.codex/skills/。
+7. 确保 ~/.codex/config.toml 的 [features] 包含 hooks = true。
+8. 读取并保留 ~/.codex/hooks.json 中已有的非本项目 hook；注册以下三个 hook：
    - Stop: python3 ~/.codex/hooks/stop-wrapper.py --vault-root <vault-path>
    - UserPromptSubmit: python3 ~/.codex/hooks/stop-wrapper.py --vault-root <vault-path>
    - PreToolUse: python3 ~/.codex/hooks/pretool-wrapper.py --vault-root <vault-path>
-8. 将仓库 .codex/AGENTS.md 的项目归档规则合并到 ~/.codex/AGENTS.md，保留已有本地规则。
-9. 为复制后的 hook 添加可执行权限。
-10. 运行 python3 ~/.codex/skills/checkpoint/checkpoint.py --vault-root <vault-path> 进行验证。
-11. 报告 hooks.json 的实际修改、写入的断点路径和验证结果。不要输出令牌、rollout 内容或私有 vault 内容。
+9. 将仓库 .codex/AGENTS.md 的项目归档规则合并到 ~/.codex/AGENTS.md，保留已有本地规则。
+10. 为复制后的 hook 添加可执行权限。
+11. 运行 python3 ~/.codex/skills/checkpoint/checkpoint.py --vault-root <vault-path> 进行验证。
+12. 报告 hooks.json 的实际修改、写入的断点路径和验证结果。不要输出令牌、rollout 内容或私有 vault 内容。
 ```
 
 ```text
@@ -162,17 +174,18 @@ Enable the complete Codex and Obsidian knowledge workflow on this machine.
 1. Ask for the Obsidian vault path. Do not continue without an explicit path.
 2. Clone the repository into a temporary directory or a user-selected directory.
 3. Copy .codex/redaction.py into ~/.codex/redaction.py.
-4. Copy .codex/hooks/*.py into ~/.codex/hooks/.
-5. Copy checkpoint, search, and synthesize into ~/.codex/skills/.
-6. Ensure [features] in ~/.codex/config.toml contains hooks = true.
-7. Read and preserve unrelated hooks in ~/.codex/hooks.json, then register these hooks:
+4. Copy .codex/metadata.py into ~/.codex/metadata.py.
+5. Copy .codex/hooks/*.py into ~/.codex/hooks/.
+6. Copy checkpoint, search, and synthesize into ~/.codex/skills/.
+7. Ensure [features] in ~/.codex/config.toml contains hooks = true.
+8. Read and preserve unrelated hooks in ~/.codex/hooks.json, then register these hooks:
    - Stop: python3 ~/.codex/hooks/stop-wrapper.py --vault-root <vault-path>
    - UserPromptSubmit: python3 ~/.codex/hooks/stop-wrapper.py --vault-root <vault-path>
    - PreToolUse: python3 ~/.codex/hooks/pretool-wrapper.py --vault-root <vault-path>
-8. Merge the project-archiving rules from .codex/AGENTS.md into ~/.codex/AGENTS.md while preserving existing local rules.
-9. Add executable permission to copied hook files.
-10. Verify with python3 ~/.codex/skills/checkpoint/checkpoint.py --vault-root <vault-path>.
-11. Report the actual hooks.json changes, checkpoint path, and verification result. Do not expose tokens, rollout content, or private vault content.
+9. Merge the project-archiving rules from .codex/AGENTS.md into ~/.codex/AGENTS.md while preserving existing local rules.
+10. Add executable permission to copied hook files.
+11. Verify with python3 ~/.codex/skills/checkpoint/checkpoint.py --vault-root <vault-path>.
+12. Report the actual hooks.json changes, checkpoint path, and verification result. Do not expose tokens, rollout content, or private vault content.
 ```
 
 ## 日常使用
@@ -198,6 +211,7 @@ Enable the complete Codex and Obsidian knowledge workflow on this machine.
 
 ```text
 .codex/
+├── metadata.py
 ├── redaction.py
 ├── hooks/
 │   ├── checkpoint.py

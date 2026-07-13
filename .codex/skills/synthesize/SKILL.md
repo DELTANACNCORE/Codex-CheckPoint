@@ -20,6 +20,10 @@ AI开发参考属于用户控制的核心知识，只能在用户明确要求时
 
 AI development reference is user-controlled core knowledge. Create or replace it only when the user explicitly requests it. It serves material-rich company, learning, or research work that benefits from reuse across new tasks, not ordinary session summaries.
 
+项目总结和经授权写入的 AI开发参考会补全 `aliases` 与 `keywords`，用于后续精确检索。既有人工 metadata 保持原值；自动 hook 不会借此创建或覆盖 AI开发参考。
+
+Project summaries and user-authorized AI development references enrich `aliases` and `keywords` for later precise retrieval. Existing manual metadata remains unchanged; automatic hooks never use this enrichment to create or replace an AI development reference.
+
 ## 建议请求
 *Suggested Prompts*
 

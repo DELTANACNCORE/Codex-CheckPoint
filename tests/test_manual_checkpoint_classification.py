@@ -85,6 +85,7 @@ class ManualCheckpointClassificationTest(unittest.TestCase):
         self.hooks = self.home / ".codex" / "hooks"
         self.hooks.mkdir(parents=True)
         shutil.copy2(REPO_ROOT / ".codex" / "redaction.py", self.home / ".codex" / "redaction.py")
+        shutil.copy2(REPO_ROOT / ".codex" / "metadata.py", self.home / ".codex" / "metadata.py")
         shutil.copy2(HOOK, self.hooks / "checkpoint.py")
         self.docker_rollout = self.sessions / f"rollout-2026-07-13T08-00-00-{DOCKER_SESSION}.jsonl"
         self.knowledge_rollout = self.sessions / f"rollout-2026-07-13T08-10-00-{KNOWLEDGE_SESSION}.jsonl"

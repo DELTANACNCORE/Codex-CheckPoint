@@ -8,6 +8,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+CODEX_ROOT = Path(__file__).resolve().parents[1]
+if str(CODEX_ROOT) not in sys.path:
+    sys.path.insert(0, str(CODEX_ROOT))
+
+from metadata import parse_frontmatter_list
+
 if "--vault-root" in sys.argv:
     idx = sys.argv.index("--vault-root")
     if idx + 1 < len(sys.argv):
@@ -85,14 +91,7 @@ def read_text(path: Path) -> str:
 
 
 def extract_list(text: str, key: str) -> list[str]:
-    matched = re.search(rf"^{re.escape(key)}:\s*(\[.*\])", text, re.MULTILINE)
-    if not matched:
-        return []
-    try:
-        values = json.loads(matched.group(1))
-    except json.JSONDecodeError:
-        return []
-    return [str(value).strip() for value in values if str(value).strip()] if isinstance(values, list) else []
+    return parse_frontmatter_list(text, key)
 
 
 def extract_frontmatter_string(text: str, key: str) -> str:
@@ -166,6 +165,7 @@ def score_note(path: Path, text: str, keywords: list[str]) -> int:
     if not keywords:
         return 0
     title = extract_h1(text, path.stem).lower()
+    aliases = " ".join(extract_list(text, "aliases")).lower()
     tags = " ".join(extract_list(text, "tags")).lower()
     projects = " ".join(projects_for_note(text)).lower()
     recovery = " ".join(extract_section(text, heading) for heading in RECOVERY_SECTIONS).lower()
@@ -174,6 +174,7 @@ def score_note(path: Path, text: str, keywords: list[str]) -> int:
     for keyword in keywords:
         term = keyword.lower()
         score += title.count(term) * 14
+        score += aliases.count(term) * 16
         score += projects.count(term) * 12
         score += tags.count(term) * 8
         score += recovery.count(term) * 4

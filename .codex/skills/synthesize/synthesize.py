@@ -16,6 +16,7 @@ CODEX_ROOT = Path(__file__).resolve().parents[2]
 if str(CODEX_ROOT) not in sys.path:
     sys.path.insert(0, str(CODEX_ROOT))
 
+from metadata import metadata_leaf_values, metadata_values, parse_frontmatter_list
 from redaction import redact_sensitive_text
 
 
@@ -158,14 +159,7 @@ def extract_h1(text: str, fallback: str) -> str:
 
 
 def extract_frontmatter_list(text: str, key: str) -> list[str]:
-    m = re.search(rf"^{re.escape(key)}:\s*(\[.*\])", text, re.MULTILINE)
-    if not m:
-        return []
-    try:
-        data = json.loads(m.group(1))
-    except Exception:
-        return []
-    return [str(x) for x in data] if isinstance(data, list) else []
+    return parse_frontmatter_list(text, key)
 
 
 def extract_frontmatter_value(text: str, key: str) -> str:
@@ -222,6 +216,41 @@ def dedupe_texts(items: list[str], limit: int | None = None) -> list[str]:
     return unique
 
 
+def selected_metadata(records: list[dict], key: str) -> list[str]:
+    """Collect existing checkpoint metadata without discarding user values."""
+    return metadata_values([record.get(key, []) for record in records])
+
+
+def generated_keywords(project: str, tags: list[str], records: list[dict]) -> list[str]:
+    return metadata_values(
+        selected_metadata(records, "keywords"),
+        project,
+        metadata_leaf_values(tags),
+        limit=8,
+        filter_noise=True,
+    )
+
+
+def generated_aliases(
+    project: str,
+    title: str,
+    tags: list[str],
+    keywords: list[str],
+    records: list[dict],
+) -> list[str]:
+    existing = selected_metadata(records, "aliases")
+    generated = metadata_values(
+        project,
+        title,
+        keywords,
+        tags,
+        metadata_leaf_values(tags),
+        limit=12,
+        filter_noise=True,
+    )
+    return metadata_values(existing, generated, limit=12)
+
+
 def build_record(path: Path, text: str) -> dict:
     sections = {heading: extract_block(text, heading) for heading in SECTION_HEADINGS}
     status_match = re.search(r'^status:\s*"([^"]+)"', text, re.MULTILINE)
@@ -234,6 +263,7 @@ def build_record(path: Path, text: str) -> dict:
         "tags": extract_frontmatter_list(text, "tags"),
         "category": extract_frontmatter_list(text, "category"),
         "keywords": extract_frontmatter_list(text, "keywords"),
+        "aliases": extract_frontmatter_list(text, "aliases"),
         "projects": extract_frontmatter_list(text, "projects"),
         "session_ids": extract_frontmatter_list(text, "session_ids"),
         "session_id": extract_frontmatter_value(text, "session_id"),
@@ -1133,15 +1163,30 @@ def write_long_term_experience(args, vault_root: Path, project: str, selected: l
         print("材料类别不足三类，依据用户强制授权继续写入 AI开发参考。")
     experience_dir = vault_root / "AI开发参考"
     target_path = experience_dir / f"{safe_filename(project)}.md"
+    existing_text = read_text(target_path)
     if target_path.exists() and not args.replace_approved:
         print(f"已有 AI开发参考：{target_path}。覆盖前需要用户明确授权，并加入 --replace-approved。")
         return False
     experience_dir.mkdir(parents=True, exist_ok=True)
+    title = args.title or f"{project} AI开发参考"
     selected_session_ids = []
     for record in selected:
         if record["kind"] == "session" and record.get("session_id"):
             selected_session_ids.append(record["session_id"])
         selected_session_ids.extend(record.get("session_ids", []))
+    reference_tags = metadata_values(["AI开发参考", "核心知识", project])
+    reference_keywords = extract_frontmatter_list(existing_text, "keywords") or generated_keywords(
+        project,
+        reference_tags,
+        selected,
+    )
+    reference_aliases = extract_frontmatter_list(existing_text, "aliases") or generated_aliases(
+        project,
+        title,
+        reference_tags,
+        reference_keywords,
+        selected,
+    )
     frontmatter = (
         "---\n"
         f"date: {datetime.now(VAULT_TIMEZONE).strftime('%Y-%m-%d')}\n"
@@ -1150,10 +1195,11 @@ def write_long_term_experience(args, vault_root: Path, project: str, selected: l
         "ai_development_reference: true\n"
         "user_authorized: true\n"
         f"session_ids: {json.dumps(dedupe_texts(selected_session_ids), ensure_ascii=False)}\n"
-        f"tags: {json.dumps(dedupe_texts(['AI开发参考', '核心知识', project]), ensure_ascii=False)}\n"
+        f"tags: {json.dumps(reference_tags, ensure_ascii=False)}\n"
+        f"keywords: {json.dumps(reference_keywords, ensure_ascii=False)}\n"
+        f"aliases: {json.dumps(reference_aliases, ensure_ascii=False)}\n"
         "---\n\n"
     )
-    title = args.title or f"{project} AI开发参考"
     target_path.write_text(
         redact_sensitive_text(frontmatter + synthesize_long_term_body(project, title, selected)),
         encoding="utf-8",
@@ -1271,13 +1317,26 @@ def main():
     # 默认只更新一个独立项目摘要；目录仅服务于已确认的父项目。
     target_path = projects_dir / f"{safe_filename(project)}.md"
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    existing_session_ids = extract_frontmatter_list(read_text(target_path), "session_ids")
+    existing_text = read_text(target_path)
+    existing_session_ids = extract_frontmatter_list(existing_text, "session_ids")
     selected_session_ids = []
     for record in selected:
         if record["kind"] == "session" and record.get("session_id"):
             selected_session_ids.append(record["session_id"])
         selected_session_ids.extend(record.get("session_ids", []))
     session_ids = dedupe_texts(existing_session_ids + selected_session_ids)
+    summary_keywords = extract_frontmatter_list(existing_text, "keywords") or generated_keywords(
+        project,
+        tags,
+        selected,
+    )
+    summary_aliases = extract_frontmatter_list(existing_text, "aliases") or generated_aliases(
+        project,
+        title,
+        tags,
+        summary_keywords,
+        selected,
+    )
     frontmatter = (
         "---\n"
         f"date: {datetime.now(VAULT_TIMEZONE).strftime('%Y-%m-%d')}\n"
@@ -1286,6 +1345,8 @@ def main():
         "archive_status: \"archived\"\n"
         f"session_ids: {json.dumps(session_ids, ensure_ascii=False)}\n"
         f"tags: {json.dumps(tags, ensure_ascii=False)}\n"
+        f"keywords: {json.dumps(summary_keywords, ensure_ascii=False)}\n"
+        f"aliases: {json.dumps(summary_aliases, ensure_ascii=False)}\n"
         "---\n\n"
     )
     body = synthesize_body(project, title, selected)
