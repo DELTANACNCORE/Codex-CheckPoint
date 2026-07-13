@@ -15,11 +15,21 @@ if "--vault-root" in sys.argv:
         os.environ["OBSIDIAN_VAULT"] = sys.argv[idx + 1]
 
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser().resolve()
+VAULT_ROOT = Path(os.environ.get("OBSIDIAN_VAULT", "~/obsidian/知识库")).expanduser().resolve()
 LOG_PATH = CODEX_HOME / "logs" / "stop-wrapper-debug.jsonl"
 CHECKPOINT_HOOK = Path(__file__).with_name("checkpoint.py")
 RETRIEVE_HOOK = Path(__file__).with_name("retrieve.py")
 KNOWLEDGE_PROJECT_UPDATED = re.compile(
     r"^\[obsidian-hook\] (?:Project knowledge updated|External knowledge project written):",
+    re.MULTILINE,
+)
+CHECKPOINT_WRITTEN = re.compile(
+    r"^\[obsidian-hook\]\s+Session checkpoint written:\s+(?P<path>[^\r\n]+)$",
+    re.MULTILINE,
+)
+CHECKPOINT_LOCATION = re.compile(
+    r"^\[obsidian-hook\]\s+Session checkpoint location:\s+"
+    r"vault-relative=(?P<path>.+?);\s*folder=(?P<folder>[^\r\n]+)$",
     re.MULTILINE,
 )
 
@@ -99,6 +109,30 @@ def _merged_hook_output(outputs: list[str], event_name: str) -> str:
     return json.dumps(merged, ensure_ascii=False)
 
 
+def _checkpoint_written_notice(output: str) -> str:
+    """将 hook 的真实写入结果转换成用户可见的定位提示。"""
+    written = CHECKPOINT_WRITTEN.search(output or "")
+    if not written:
+        return ""
+    location = CHECKPOINT_LOCATION.search(output or "")
+    if location:
+        note_path = location.group("path").strip()
+        directory = location.group("folder").strip()
+    else:
+        absolute_path = Path(written.group("path").strip()).expanduser().resolve()
+        try:
+            note_path = absolute_path.relative_to(VAULT_ROOT).as_posix()
+            directory = absolute_path.parent.relative_to(VAULT_ROOT).as_posix() + "/"
+        except ValueError:
+            note_path = str(absolute_path)
+            directory = str(absolute_path.parent) + os.sep
+    return "\n".join((
+        "本次对话已写入会话断点。",
+        f"断点文件：{note_path}",
+        f"所在目录：{directory}",
+    ))
+
+
 def main():
     raw_input = sys.stdin.read()
     _log("wrapper_start", argv=sys.argv, raw_stdin_len=len(raw_input), raw_stdin_preview=raw_input[:2000])
@@ -119,6 +153,10 @@ def main():
     outputs = []
     if checkpoint_proc and checkpoint_proc.stdout.strip():
         outputs.append(checkpoint_proc.stdout.strip())
+    if event_name == "Stop" and checkpoint_proc:
+        checkpoint_notice = _checkpoint_written_notice(checkpoint_proc.stdout or "")
+        if checkpoint_notice:
+            outputs.append(json.dumps({"systemMessage": checkpoint_notice}, ensure_ascii=False))
     if (
         event_name == "Stop"
         and checkpoint_proc

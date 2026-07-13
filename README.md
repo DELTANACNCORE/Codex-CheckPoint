@@ -1,4 +1,4 @@
-# Codex CheckPoint V0.6.1 / Codex 会话断点 V0.6.1
+# Codex CheckPoint V0.6.2 / Codex 会话断点 V0.6.2
 
 为 Codex 与 Obsidian 提供会话断点、持续恢复、项目总结和知识检索。仓库只包含运行时 hook、skills、README、许可证和忽略规则，不包含安装、迁移、打包或解包脚本。
 
@@ -12,7 +12,7 @@ This project is based on [hjm4839-coder/checkpoint](https://github.com/hjm4839-c
 
 ## 功能 / Features
 
-- 自动断点：首次会话断点写入 `Codex工作记录/会话断点/` 顶层，已有断点后续保持原位置更新。标题优先采用可用的 Codex 会话标题，再回退到跨阶段的助手结论；`title_baseline` 会保护用户在 Obsidian 中改过的标题。自动 hook 不会触发分类或移动历史文件；手动 checkpoint 只修复自动生成的回执、长问句和依赖上下文的机械标题，再读取全部已保存会话后统一归类。 Automatic checkpoints create new notes at the top level of `Codex工作记录/会话断点/` and preserve existing note locations on later updates. Titles prefer a usable Codex thread title, then fall back to cross-stage assistant conclusions; `title_baseline` protects titles changed in Obsidian. Automatic hooks never classify or move history. Manual checkpoint repairs only automatic receipts, long questions, and context-dependent mechanical titles before reading every saved session and classifying all notes together.
+- 自动断点：首次会话断点写入 `Codex工作记录/会话断点/` 顶层，已有断点后续保持原位置更新。标题优先采用可用的 Codex 会话标题，再回退到跨阶段的助手结论；`title_baseline` 会保护用户在 Obsidian 中改过的标题。自动 hook 不会触发分类或移动历史文件；手动 checkpoint 只修复自动生成的回执、长问句和依赖上下文的机械标题，再读取全部已保存会话后统一归类。 Stop hook 成功写入后会提示最终断点文件和目录，索引记录或跳过写入时保持静默。 Automatic checkpoints create new notes at the top level of `Codex工作记录/会话断点/` and preserve existing note locations on later updates. Titles prefer a usable Codex thread title, then fall back to cross-stage assistant conclusions; `title_baseline` protects titles changed in Obsidian. Automatic hooks never classify or move history. Manual checkpoint repairs only automatic receipts, long questions, and context-dependent mechanical titles before reading every saved session and classifying all notes together. After a successful Stop-hook write, the user receives the final checkpoint file and directory; index-only and skipped writes stay silent.
 - 会话隔离：hook 事件只有在 session 与 rollout 一一匹配且 vault 根目录包含 `.obsidian` 时才允许写入；缺少匹配 rollout 的内部或环境会话会直接跳过，绝不借用最近的其他会话。 Session isolation: hook events write only when their session matches a rollout and the vault root contains `.obsidian`; internal or ambient events without a matching rollout are skipped and never borrow another session.
 - 断点清理：`synthesize --cleanup-checkpoints` 会先以标题为主扫描伪对话、重复副本和机械标题。默认只报告；`--apply-cleanup` 仅在用户确认后删除无 rollout 的高置信候选、修复可推导的标题，并同步每日索引。两条真实会话即使相似也只报告。 Checkpoint cleanup: `synthesize --cleanup-checkpoints` first scans for pseudo conversations, duplicate copies, and mechanical titles with title-first matching. It only reports by default; after user confirmation, `--apply-cleanup` removes high-confidence candidates without rollouts, repairs derivable titles, and synchronizes daily indexes. Similar rollout-backed sessions are reported only.
 - 跨日索引：同日会话首行使用真实对话开始时间，第二行显示 session 更新；跨日会话在首日和更新日均以 session 更新时间为首行，第二行标注原始对话时间。 Cross-day indexes show the real conversation start time and session update on the same day. For cross-day sessions, both the first and update day use the session update time first and label the original conversation time below.
@@ -22,6 +22,10 @@ This project is based on [hjm4839-coder/checkpoint](https://github.com/hjm4839-c
 - 长期经验：每次 `synthesize` 都会归档项目总结，并按会话长度提示是否值得提炼长期经验。只有用户明确授权或强制要求时才写入 `长期经验总结/<项目名>.md`；有效材料类别不足三类时必须再次询问。自动 hook 不会创建、覆盖或删除长期经验。 Long-term experience: every `synthesize` run archives the project summary and uses session length to recommend extraction. `长期经验总结/<项目名>.md` is written only with explicit user authorization or a forced request; fewer than three useful material categories requires another user decision. Automatic hooks never create, replace, or delete long-term experience.
 - 搜索与合成：保留本地 `search` 与 `synthesize` skills；合成必须指定项目或标签。聚类合成额外要求用户确认范围和目标项目名，未确认的聚类不能写入知识库。 Search and synthesis: local `search` and `synthesize` skills remain available. Synthesis requires an explicit project or tag. Cluster synthesis also requires a user-confirmed scope and target project name; an unconfirmed cluster cannot write to the vault.
 - PreTool 提醒：写入项目文档前提示已有相关材料。 PreTool reminder: project-document writes are checked against existing material.
+
+## V0.6.2 / 版本 0.6.2
+
+- 自动写入提醒：Stop hook 在真实写入会话断点后向用户显示 vault 相对文件路径和目录。短会话仅写入每日索引、无匹配 rollout 或其他跳过情形不会产生误报。 Automatic write notification: after a real session-checkpoint write, the Stop hook shows the user the vault-relative file path and directory. Short index-only sessions, missing rollouts, and other skipped writes do not produce a false notice.
 
 ## V0.6.1 / 版本 0.6.1
 
