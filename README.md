@@ -1,5 +1,5 @@
-# Codex CheckPoint V0.8.0
-*Codex 会话断点 V0.8.0*
+# Codex CheckPoint V0.8.1
+*Codex 会话断点 V0.8.1*
 
 为 Codex 与 Obsidian 提供会话断点、持续恢复、项目总结和知识检索。仓库只包含运行时 hook、skills、README、许可证和忽略规则，不包含安装、迁移、打包或解包脚本。
 
@@ -17,6 +17,8 @@ This project is based on [hjm4839-coder/checkpoint](https://github.com/hjm4839-c
 
 - 自动断点：新会话写入 `Codex工作记录/会话断点/未分类对话/`，已有断点后续保持原位置更新。标题优先采用可用的 Codex 会话标题，再回退到跨阶段的助手结论；`title_baseline` 会保护用户在 Obsidian 中改过的标题。自动 hook 不会触发分类或移动历史文件；手动 checkpoint 只修复自动生成的回执、长问句和依赖上下文的机械标题，只整理未分类对话和当前重新检查的会话。Stop hook 成功写入后会提示最终断点文件和目录；未分类断点会提示调用 `$checkpoint` 归类，索引记录或跳过写入时保持静默。\
   Automatic checkpoints create new notes in `Codex工作记录/会话断点/未分类对话/` and preserve existing note locations on later updates. Titles prefer a usable Codex thread title, then fall back to cross-stage assistant conclusions; `title_baseline` protects titles changed in Obsidian. Automatic hooks never classify or move history. Manual checkpoint repairs only automatic receipts, long questions, and context-dependent mechanical titles, then organizes only unclassified notes and the current rechecked session. After a successful Stop-hook write, the user receives the final checkpoint file and directory; an unclassified note directs the user to `$checkpoint` for classification, while index-only and skipped writes stay silent.
+- Stop Hook 提速：自动 Stop 在断点和每日索引写入后立即返回，项目总结和知识库首页由受锁保护的后台子进程刷新。手动 checkpoint 保持同步，以保证分类和最终位置回执。\
+  Stop-hook acceleration: automatic Stop returns after the checkpoint and daily index are written, then refreshes project summaries and the vault homepage in a lock-protected background process. Manual checkpoint remains synchronous so classification and final-location receipts stay reliable.
 - 会话隔离：hook 事件只有在 session 与 rollout 一一匹配且 vault 根目录包含 `.obsidian` 时才允许写入；缺少匹配 rollout 的内部或环境会话会直接跳过，绝不借用最近的其他会话。\
   Session isolation: hook events write only when their session matches a rollout and the vault root contains `.obsidian`; internal or ambient events without a matching rollout are skipped and never borrow another session.
 - 断点清理：`synthesize --cleanup-checkpoints` 会先以标题为主扫描伪对话、重复副本和机械标题。默认只报告；`--apply-cleanup` 仅在用户确认后删除无 rollout 的高置信候选、修复可推导的标题，并同步每日索引。两条真实会话即使相似也只报告。\
@@ -37,6 +39,14 @@ This project is based on [hjm4839-coder/checkpoint](https://github.com/hjm4839-c
   Search and synthesis: local `search` and `synthesize` skills remain available. Synthesis requires an explicit project or tag. Cluster synthesis also requires a user-confirmed scope and target project name; an unconfirmed cluster cannot write to the vault.
 - PreTool 提醒：写入项目文档前提示已有相关材料。\
   PreTool reminder: project-document writes are checked against existing material.
+
+## V0.8.1
+*Version 0.8.1*
+
+- 后台维护：仅迁入 Stop Hook 的核心提速能力。后台任务会串行刷新项目总结和知识库首页，并记录启动、完成或失败；启动失败时自动回退到同步维护。\
+  Background maintenance: only the core Stop-hook acceleration is included. Background work serially refreshes project summaries and the vault homepage and records scheduling, completion, or failure; a spawn failure falls back to synchronous maintenance.
+- 写入边界：没有引入上游的健康检查、60 分钟节流或自动 AI开发参考写入。AI开发参考仍仅由获得用户明确授权的 `$synthesize` 写入。\
+  Write boundaries: this release does not add the upstream health check, 60-minute throttle, or automatic AI development reference writes. AI development references remain writable only through explicitly authorized `$synthesize`.
 
 ## V0.8.0
 *Version 0.8.0*

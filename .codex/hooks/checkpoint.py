@@ -9,6 +9,9 @@ import os
 import re
 import glob
 import shlex
+import subprocess
+import tempfile
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -58,6 +61,7 @@ PROJECT_EXPERIENCE_SUFFIX = "AI开发参考.md"
 PROJECT_SUMMARY_MAX_CHARS = 18000
 AUTO_CHECKPOINT_MIN_ROUNDS = 5
 VAULT_TIMEZONE = ZoneInfo("Asia/Shanghai")
+BACKGROUND_MAINTENANCE_FLAG = "--background-maintenance"
 DEBUG_LOG_PATH = Path(
     os.environ.get(
         "CHECKPOINT_DEBUG_LOG",
@@ -2616,6 +2620,152 @@ def _set_codex_root_order():
 
 
 
+def _background_payload_path() -> Path | None:
+    try:
+        index = sys.argv.index(BACKGROUND_MAINTENANCE_FLAG)
+    except ValueError:
+        return None
+    if index + 1 >= len(sys.argv):
+        return None
+    return Path(sys.argv[index + 1]).expanduser()
+
+
+@contextmanager
+def _background_maintenance_lock():
+    """Serialize derived writes so simultaneous Stop hooks cannot overwrite each other."""
+    lock_path = CODEX_HOME / "logs" / "checkpoint-maintenance.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as handle:
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0)
+            if not handle.read(1):
+                handle.seek(0)
+                handle.write("0")
+                handle.flush()
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            unlock = lambda: msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            unlock = lambda: fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        try:
+            yield
+        finally:
+            unlock()
+
+
+def _background_context_from_checkpoint(note_path: Path) -> dict:
+    """Rebuild only the summary inputs already persisted in the checkpoint note."""
+    text = _read_text_limited(note_path, 18000)
+    if not text:
+        raise ValueError(f"checkpoint note is unreadable: {note_path}")
+    goal_block = _extract_section(text, "会话目标演进")
+    prompts = []
+    for line in goal_block.splitlines():
+        match = re.match(r"^-\s+\*\*[^*]+\*\*：\s*(.+)$", line.strip())
+        if match:
+            prompts.append(match.group(1).strip())
+    if not prompts:
+        prompts = [_extract_h1(text, note_path.stem)]
+    return {
+        "projects": set(read_frontmatter_list(note_path, "projects")),
+        "external_projects": set(read_frontmatter_list(note_path, "external_projects")),
+        "status": _frontmatter_string(text, "status") or "completed",
+        "tags": read_frontmatter_list(note_path, "tags"),
+        "keywords": read_frontmatter_list(note_path, "keywords"),
+        "aliases": read_frontmatter_list(note_path, "aliases"),
+        "user_prompts": prompts,
+        "latest_assistant_update": _extract_section(text, "可直接续接的结论"),
+        "written_files": set(),
+        "external_written_files": set(),
+    }
+
+
+def _refresh_derived_knowledge(ctx: dict, session_note_path: Path) -> list[Path]:
+    project_notes = update_project_knowledge(ctx, session_note_path)
+    update_dashboard()
+    return project_notes
+
+
+def _run_background_maintenance(payload_path: Path) -> int:
+    """Refresh derived knowledge after the parent Stop hook has already returned."""
+    try:
+        payload = json.loads(payload_path.read_text(encoding="utf-8"))
+        note_path = Path(str(payload.get("session_note_path", ""))).expanduser().resolve()
+        note_path.relative_to(VAULT_ROOT)
+        _debug_log("background_maintenance_started", note_path=note_path)
+        ctx = _background_context_from_checkpoint(note_path)
+        with _background_maintenance_lock():
+            project_notes = _refresh_derived_knowledge(ctx, note_path)
+        _debug_log(
+            "background_maintenance_completed",
+            note_path=note_path,
+            project_notes=project_notes,
+        )
+        return 0
+    except Exception as exc:
+        _debug_log(
+            "background_maintenance_failed",
+            payload_path=payload_path,
+            error=repr(exc),
+        )
+        return 1
+    finally:
+        try:
+            payload_path.unlink()
+        except OSError:
+            pass
+
+
+def _spawn_background_maintenance(session_note_path: Path) -> bool:
+    """Detach non-critical derived writes while retaining a durable audit trail."""
+    payload_path = None
+    try:
+        log_dir = CODEX_HOME / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        fd, raw_path = tempfile.mkstemp(
+            prefix="checkpoint-maintenance-",
+            suffix=".json",
+            dir=log_dir,
+        )
+        payload_path = Path(raw_path)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump({"session_note_path": str(session_note_path.resolve())}, handle, ensure_ascii=False)
+        subprocess.Popen(
+            [
+                sys.executable,
+                str(Path(__file__).resolve()),
+                "--vault-root",
+                str(VAULT_ROOT),
+                BACKGROUND_MAINTENANCE_FLAG,
+                str(payload_path),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+        _debug_log("background_maintenance_scheduled", note_path=session_note_path, payload_path=payload_path)
+        return True
+    except Exception as exc:
+        _debug_log(
+            "background_maintenance_schedule_failed",
+            note_path=session_note_path,
+            payload_path=payload_path,
+            error=repr(exc),
+        )
+        if payload_path is not None:
+            try:
+                payload_path.unlink()
+            except OSError:
+                pass
+        return False
+
+
 def _parse_cli():
     """解析命令行/stdin 输入，返回统一 dict。"""
     result = {"transcript": "", "session": "unknown", "cwd": os.getcwd(), "force": False,
@@ -2746,6 +2896,12 @@ def _read_frontmatter_all(path):
 
 
 def main():
+    if BACKGROUND_MAINTENANCE_FLAG in sys.argv:
+        payload_path = _background_payload_path()
+        if payload_path is None:
+            _debug_log("background_maintenance_missing_payload", argv=sys.argv)
+            sys.exit(1)
+        sys.exit(_run_background_maintenance(payload_path))
     cli = _parse_cli()
     transcript_path, session_id, cwd = cli["transcript"], cli["session"], cli["cwd"]
     force = cli["force"]
@@ -2950,12 +3106,19 @@ def main():
         f"vault-relative={vault_relative_path}; folder={vault_relative_directory}"
     )
     update_daily_index(INDEX_DIR, session_note_path, session_id, ctx, status)
-    project_notes = update_project_knowledge(ctx, session_note_path)
-    if project_notes:
-        print("[obsidian-hook] Project knowledge updated: " + ", ".join(str(p) for p in project_notes))
+    background_scheduled = (
+        hook_event_name == "Stop"
+        and not manual_checkpoint
+        and _spawn_background_maintenance(final_note_path)
+    )
+    if background_scheduled:
+        print("[obsidian-hook] Background maintenance scheduled")
+    else:
+        project_notes = _refresh_derived_knowledge(ctx, session_note_path)
+        if project_notes:
+            print("[obsidian-hook] Project knowledge updated: " + ", ".join(str(p) for p in project_notes))
     if ctx.get("external_written_files"):
         print("[obsidian-hook] External knowledge project written: " + ", ".join(sorted(ctx["external_written_files"])))
-    update_dashboard()
     print(f"[obsidian-hook] Daily index updated")
     sys.exit(0)
 
