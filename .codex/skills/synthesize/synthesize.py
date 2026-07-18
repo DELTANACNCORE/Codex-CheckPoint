@@ -3,6 +3,7 @@
 
 import argparse
 from difflib import SequenceMatcher
+import hashlib
 import importlib.util
 import json
 import os
@@ -17,6 +18,18 @@ if str(CODEX_ROOT) not in sys.path:
     sys.path.insert(0, str(CODEX_ROOT))
 
 from metadata import metadata_leaf_values, metadata_values, parse_frontmatter_list
+from maintenance import (
+    apply_link_candidate,
+    apply_broken_link_repair_candidate,
+    apply_metadata_candidates,
+    audit_vault,
+    broken_link_repair_candidates,
+    format_audit_report,
+    format_broken_link_repair_candidates,
+    format_link_candidates,
+    link_candidates,
+    scan_vault,
+)
 from redaction import redact_sensitive_text
 
 
@@ -84,6 +97,30 @@ PROJECT_IDENTITY_GENERIC_TOKENS = {
     "会话",
     "迁到",
 }
+MERGE_IDENTITY_GENERIC_TOKENS = PROJECT_IDENTITY_GENERIC_TOKENS | {
+    "docker",
+    "服务",
+    "系统",
+    "网络",
+    "运维",
+    "部署",
+    "更新",
+    "测试",
+    "验证",
+    "检查",
+    "问题",
+    "修复",
+    "自动",
+    "文档",
+    "代码",
+    "功能",
+    "支持",
+    "任务",
+    "使用",
+    "处理",
+    "内容",
+    "整理",
+}
 LONG_SESSION_MIN_PROMPTS = 20
 LONG_SESSION_MIN_CHARS = 12000
 
@@ -95,8 +132,24 @@ def parse_args():
     group.add_argument("--tag")
     group.add_argument("--cluster", action="store_true")
     group.add_argument("--cleanup-checkpoints", action="store_true", help="扫描伪对话和重复断点，默认只输出候选")
+    group.add_argument("--audit", action="store_true", help="只读检查知识库结构、归档、链接和 metadata 候选")
+    group.add_argument("--merge-candidates", action="store_true", help="扫描可由用户确认归档的相关会话，默认只输出候选")
+    group.add_argument("--merge-candidate", help="确认后归档指定的合并候选编号")
+    group.add_argument("--merge-sessions", nargs="+", metavar="SESSION_ID", help="用户直接指定需要合并归档的 session ID")
+    group.add_argument("--link-candidates", action="store_true", help="只读扫描跨文档 wikilink 候选")
+    group.add_argument("--link-candidate", help="确认后写入指定的双向 wikilink 候选")
+    group.add_argument("--repair-link-candidates", action="store_true", help="只读扫描断裂 wikilink 的唯一修复候选")
+    group.add_argument("--repair-link-candidate", help="确认后修复指定的断裂 wikilink 候选")
     parser.add_argument("--cluster-project", help="确认聚类后写入的目标项目名")
     parser.add_argument("--confirm-cluster", action="store_true", help="确认用户明确要求按聚类范围写入")
+    parser.add_argument("--merge-project", help="用户确认合并后写入的独立项目名")
+    parser.add_argument("--confirm-merge", action="store_true", help="确认用户同意将候选会话归档到指定项目")
+    parser.add_argument("--apply-metadata", action="store_true", help="执行已审阅的 metadata 回填")
+    parser.add_argument("--metadata-sessions", nargs="+", metavar="SESSION_ID", help="允许回填 metadata 的指定 session ID")
+    parser.add_argument("--confirm-metadata", action="store_true", help="确认用户同意写入指定 metadata 候选")
+    parser.add_argument("--confirm-link", action="store_true", help="确认用户同意写入指定的双向 wikilink")
+    parser.add_argument("--confirm-link-repair", action="store_true", help="确认用户同意修复指定的断裂 wikilink")
+    parser.add_argument("--stale-days", type=int, default=30, help="审计中提示验证记录过期的天数")
     parser.add_argument("--title")
     parser.add_argument("--vault-root", default=str(Path("~/obsidian/知识库").expanduser()))
     parser.add_argument("--sessions-root", help="Codex rollout 根目录，默认使用 $CODEX_HOME/sessions")
@@ -575,6 +628,214 @@ def is_low_signal_session(record: dict) -> bool:
     if len(prompts) <= 1 and len(record["text"]) < 400:
         return True
     return False
+
+
+def record_is_knowledge_archived(record: dict) -> bool:
+    return record.get("status") == "archived" or bool(
+        re.search(r"^knowledge_archived:\s*true$", record.get("text", ""), re.MULTILINE)
+    )
+
+
+def merge_identity_key(value: str) -> str:
+    return cleanup_title_key(value)
+
+
+def is_specific_merge_identity(value: str) -> bool:
+    normalized = merge_identity_key(value)
+    if len(normalized) < 2 or normalized in MERGE_IDENTITY_GENERIC_TOKENS:
+        return False
+    tokens = project_identity_tokens(value) or extract_terms(value)
+    if not tokens:
+        return False
+    return any(
+        merge_identity_key(token) not in MERGE_IDENTITY_GENERIC_TOKENS
+        and len(merge_identity_key(token)) >= 2
+        for token in tokens
+    )
+
+
+def merge_identity_signals(record: dict) -> dict[str, str]:
+    """Return only concrete identity signals suitable for a user-reviewed merge proposal."""
+    signals: dict[str, str] = {}
+
+    def add(prefix: str, value: str) -> None:
+        label = normalize_space(value)
+        key = merge_identity_key(label)
+        if label and key and is_specific_merge_identity(label):
+            signals.setdefault(f"{prefix}:{key}", label)
+
+    for project in record.get("projects", []):
+        add("project", project)
+    for value in record.get("aliases", []) + record.get("keywords", []):
+        add("identity", value)
+    add("identity", record.get("title", ""))
+
+    for value in [record.get("title", ""), *record.get("aliases", []), *record.get("keywords", [])]:
+        for token in project_identity_tokens(value) or extract_terms(value):
+            add("term", token)
+    return signals
+
+
+def merge_pair_evidence(left: dict, right: dict) -> dict | None:
+    left_signals = merge_identity_signals(left)
+    right_signals = merge_identity_signals(right)
+    shared_keys = set(left_signals).intersection(right_signals)
+    shared_projects = sorted(key for key in shared_keys if key.startswith("project:"))
+    shared_identities = sorted(key for key in shared_keys if not key.startswith("project:"))
+
+    # A recorded project association needs a second concrete signal. Without a
+    # project association, require three specific signals to avoid topic-word merges.
+    if not ((shared_projects and shared_identities) or len(shared_identities) >= 3):
+        return None
+    labels = {key: left_signals[key] for key in shared_keys}
+    return {
+        "projects": [labels[key] for key in shared_projects],
+        "identities": [labels[key] for key in shared_identities],
+    }
+
+
+def merge_candidate_id(records: list[dict]) -> str:
+    session_ids = sorted(record["session_id"].lower() for record in records)
+    digest = hashlib.sha256("|".join(session_ids).encode("utf-8")).hexdigest()[:10]
+    return f"merge-{digest}"
+
+
+def shared_record_projects(records: list[dict]) -> list[str]:
+    if not records:
+        return []
+    normalized = []
+    labels = {}
+    for record in records:
+        current = {}
+        for project in record.get("projects", []):
+            key = merge_identity_key(project)
+            if key:
+                current[key] = project
+                labels.setdefault(key, project)
+        normalized.append(set(current))
+    common = set.intersection(*normalized) if normalized else set()
+    return [labels[key] for key in sorted(common)]
+
+
+def eligible_merge_records(records: list[dict]) -> list[dict]:
+    return [
+        record
+        for record in records
+        if record.get("kind") == "session"
+        and record.get("session_id")
+        and not record_is_knowledge_archived(record)
+        and not is_low_signal_session(record)
+        and not cleanup_title_reason(record.get("title", ""))
+    ]
+
+
+def build_merge_candidates(records: list[dict]) -> list[dict]:
+    """Build conservative, read-only merge proposals from unarchived checkpoint notes."""
+    eligible = sorted(eligible_merge_records(records), key=lambda record: (record["title"], record["session_id"]))
+    candidates: dict[frozenset[str], dict] = {}
+    for index, seed in enumerate(eligible):
+        cluster = [seed]
+        for other in eligible[index + 1 :]:
+            if all(merge_pair_evidence(member, other) is not None for member in cluster):
+                cluster.append(other)
+        if len(cluster) < 2:
+            continue
+
+        evidence = []
+        for left_index, left in enumerate(cluster):
+            for right in cluster[left_index + 1 :]:
+                pair = merge_pair_evidence(left, right)
+                if pair:
+                    evidence.append(pair)
+        session_keys = frozenset(record["session_id"] for record in cluster)
+        common_projects = shared_record_projects(cluster)
+        candidates[session_keys] = {
+            "id": merge_candidate_id(cluster),
+            "records": cluster,
+            "suggested_project": common_projects[0] if len(common_projects) == 1 else "",
+            "common_projects": common_projects,
+            "identities": dedupe_texts(
+                [identity for pair in evidence for identity in pair["identities"]],
+                6,
+            ),
+        }
+
+    # A maximal fully matched cluster is easier to review than its duplicated pairs.
+    candidate_sets = list(candidates)
+    retained = [
+        key
+        for key in candidate_sets
+        if not any(key < other for other in candidate_sets)
+    ]
+    return sorted(
+        (candidates[key] for key in retained),
+        key=lambda candidate: (-len(candidate["records"]), candidate["suggested_project"], candidate["id"]),
+    )
+
+
+def print_merge_candidates(candidates: list[dict], scanned_count: int, vault_root: Path, limit: int) -> None:
+    shown = candidates[: max(limit, 0)]
+    print(f"合并候选检查：扫描 {scanned_count} 条可归档会话，生成 {len(candidates)} 组高置信候选。")
+    if not shown:
+        print("当前没有满足共同项目加具体特征，或三个具体特征阈值的候选。")
+        print("用户已明确指定会话时，仍可使用 --merge-sessions <session-id...> --merge-project <项目名> --confirm-merge。")
+        return
+    for candidate in shown:
+        print()
+        print(f"候选编号: {candidate['id']}")
+        print(f"建议项目: {candidate['suggested_project'] or '待用户指定'}")
+        if candidate["common_projects"]:
+            print("共同项目: " + "、".join(candidate["common_projects"]))
+        if candidate["identities"]:
+            print("共同特征: " + "、".join(candidate["identities"]))
+        print("涉及会话:")
+        for record in candidate["records"]:
+            try:
+                relative = record["path"].relative_to(vault_root).as_posix()
+            except ValueError:
+                relative = str(record["path"])
+            print(f"- {record['session_id']} · {record['title']} · {relative}")
+    print()
+    print("本次仅生成候选，未修改任何断点、项目总结或索引。")
+    print("用户确认后使用 --merge-candidate <候选编号> --merge-project <项目名> --confirm-merge 归档。")
+
+
+def explicit_merge_records(records: list[dict], requested_ids: list[str]) -> list[dict]:
+    session_ids = []
+    for raw in requested_ids:
+        session_ids.extend(item.strip() for item in raw.split(",") if item.strip())
+    session_ids = dedupe_texts(session_ids)
+    if len(session_ids) < 2:
+        raise ValueError("至少需要两个不同的 session ID 才能执行用户指定的合并归档。")
+
+    by_session_id: dict[str, list[dict]] = {}
+    for record in records:
+        if record.get("kind") == "session" and record.get("session_id"):
+            by_session_id.setdefault(record["session_id"], []).append(record)
+    selected = []
+    missing = []
+    ambiguous = []
+    archived = []
+    for session_id in session_ids:
+        matches = by_session_id.get(session_id, [])
+        if not matches:
+            missing.append(session_id)
+            continue
+        if len(matches) != 1:
+            ambiguous.append(session_id)
+            continue
+        record = matches[0]
+        if record_is_knowledge_archived(record):
+            archived.append(session_id)
+            continue
+        selected.append(record)
+    if missing:
+        raise ValueError("未找到 session ID：" + "、".join(missing))
+    if ambiguous:
+        raise ValueError("以下 session ID 存在多个断点副本，请先执行断点清理：" + "、".join(ambiguous))
+    if archived:
+        raise ValueError("以下 session 已知识归档，不能再次作为合并来源：" + "、".join(archived))
+    return selected
 
 
 def is_verification_session(record: dict) -> bool:
@@ -1301,48 +1562,16 @@ def refresh_dashboard(vault_root: Path) -> None:
         return
 
 
-def main():
-    args = parse_args()
-    if args.confirm_cluster and not args.cluster:
-        print("--confirm-cluster 只能与 --cluster 一起使用。", file=sys.stderr)
-        sys.exit(2)
-    if args.cluster_project and not args.cluster:
-        print("--cluster-project 只能与 --cluster 一起使用。", file=sys.stderr)
-        sys.exit(2)
-    if args.cluster and not args.confirm_cluster:
-        print("聚类模式可能跨项目选择材料；请在用户明确确认范围后添加 --confirm-cluster。", file=sys.stderr)
-        sys.exit(2)
-    if args.cluster and not (args.cluster_project or "").strip():
-        print("聚类模式必须提供 --cluster-project <项目名>，避免生成无归属的“知识合成”项目总结。", file=sys.stderr)
-        sys.exit(2)
-    if args.apply_cleanup and not args.cleanup_checkpoints:
-        print("--apply-cleanup 只能与 --cleanup-checkpoints 一起使用。", file=sys.stderr)
-        sys.exit(2)
-    if args.cleanup_checkpoints and args.long_term:
-        print("断点清理不能同时写入 AI开发参考。", file=sys.stderr)
-        sys.exit(2)
-    vault_root = Path(args.vault_root).expanduser().resolve()
-    global LINK_VAULT_ROOT
-    LINK_VAULT_ROOT = vault_root
-    work_dir = vault_root / "Codex工作记录"
-    projects_dir = vault_root / "项目总结"
-    note_dir = work_dir / "会话断点"
-    if not note_dir.is_dir():
-        print(f"未找到目录：{note_dir}")
-        sys.exit(1)
-
-    if args.cleanup_checkpoints:
-        run_checkpoint_cleanup(args, vault_root, note_dir)
-        return
-
-    records = note_records(note_dir)
-    project, selected, tags = select_records(records, args, projects_dir)
-    if len(selected) < 1:
-        print("没有找到可合成的断点。")
-        sys.exit(1)
-
+def archive_project_summary(
+    args,
+    vault_root: Path,
+    projects_dir: Path,
+    project: str,
+    selected: list[dict],
+    tags: list[str],
+) -> tuple[Path, list[Path], dict]:
+    """Write one flat project summary and mark only the selected source sessions archived."""
     title = args.title or (f"{project} 知识整理" if project else "Codex 知识整理")
-    # 默认只更新一个独立项目摘要；目录仅服务于已确认的父项目。
     target_path = projects_dir / f"{safe_filename(project)}.md"
     target_path.parent.mkdir(parents=True, exist_ok=True)
     existing_text = read_text(target_path)
@@ -1382,11 +1611,22 @@ def main():
     archived_paths = mark_source_sessions_archived(selected, target_path, vault_root)
     refresh_daily_index_status(vault_root, archived_paths)
     refresh_dashboard(vault_root)
+    return target_path, archived_paths, session_length_metrics(selected)
+
+
+def print_archive_result(args, vault_root: Path, project: str, selected: list[dict], tags: list[str]) -> None:
+    target_path, archived_paths, metrics = archive_project_summary(
+        args,
+        vault_root,
+        vault_root / "项目总结",
+        project,
+        selected,
+        tags,
+    )
     print(f"文档路径: {target_path}")
     print(f"覆盖会话数: {len(selected)}")
     print(f"已归档断点数: {len(archived_paths)}")
     print(f"主要结论: 已从 {len(selected)} 条材料中整理出更高信噪比的知识文档。")
-    metrics = session_length_metrics(selected)
     print(f"会话长度：{metrics['sessions']} 个会话，{metrics['prompts']} 条用户消息，{metrics['chars']} 个字符。")
     if args.long_term:
         write_long_term_experience(args, vault_root, project, selected)
@@ -1395,6 +1635,188 @@ def main():
         print("检测到长会话。项目总结已归档；请先询问用户是否需要提炼 AI开发参考，未获得明确授权不得写入。")
     else:
         print("会话长度不足以建议 AI开发参考。项目总结已归档，未写入 AI开发参考；用户仍可明确要求强制提炼。")
+
+
+def merge_project_name(value: str) -> str:
+    project = normalize_space(value)
+    if not project:
+        raise ValueError("合并归档必须提供 --merge-project <项目名>。")
+    if "/" in project or "\\" in project:
+        raise ValueError("合并归档仅接受独立项目名。父项目目录必须先获得用户明确的归属确认。")
+    return project
+
+
+def main():
+    args = parse_args()
+    if args.confirm_cluster and not args.cluster:
+        print("--confirm-cluster 只能与 --cluster 一起使用。", file=sys.stderr)
+        sys.exit(2)
+    if args.cluster_project and not args.cluster:
+        print("--cluster-project 只能与 --cluster 一起使用。", file=sys.stderr)
+        sys.exit(2)
+    if args.cluster and not args.confirm_cluster:
+        print("聚类模式可能跨项目选择材料；请在用户明确确认范围后添加 --confirm-cluster。", file=sys.stderr)
+        sys.exit(2)
+    if args.cluster and not (args.cluster_project or "").strip():
+        print("聚类模式必须提供 --cluster-project <项目名>，避免生成无归属的“知识合成”项目总结。", file=sys.stderr)
+        sys.exit(2)
+    if args.apply_cleanup and not args.cleanup_checkpoints:
+        print("--apply-cleanup 只能与 --cleanup-checkpoints 一起使用。", file=sys.stderr)
+        sys.exit(2)
+    if args.cleanup_checkpoints and args.long_term:
+        print("断点清理不能同时写入 AI开发参考。", file=sys.stderr)
+        sys.exit(2)
+    if args.stale_days < 1:
+        print("--stale-days 必须是正整数。", file=sys.stderr)
+        sys.exit(2)
+    if args.apply_metadata and not args.audit:
+        print("--apply-metadata 只能与 --audit 一起使用。", file=sys.stderr)
+        sys.exit(2)
+    if args.metadata_sessions and not args.apply_metadata:
+        print("--metadata-sessions 只能与 --apply-metadata 一起使用。", file=sys.stderr)
+        sys.exit(2)
+    if args.confirm_metadata and not args.apply_metadata:
+        print("--confirm-metadata 只能与 --apply-metadata 一起使用。", file=sys.stderr)
+        sys.exit(2)
+    if args.apply_metadata and not args.confirm_metadata:
+        print("metadata 回填会修改指定断点；请在用户确认后添加 --confirm-metadata。", file=sys.stderr)
+        sys.exit(2)
+    if args.apply_metadata and not args.metadata_sessions:
+        print("metadata 回填必须提供 --metadata-sessions <session-id...>。", file=sys.stderr)
+        sys.exit(2)
+    if args.audit and args.long_term:
+        print("知识库审计不能同时写入 AI开发参考。", file=sys.stderr)
+        sys.exit(2)
+    merge_execution = bool(args.merge_candidate or args.merge_sessions)
+    if args.merge_project and not merge_execution:
+        print("--merge-project 只能与 --merge-candidate 或 --merge-sessions 一起使用。", file=sys.stderr)
+        sys.exit(2)
+    if args.confirm_merge and not merge_execution:
+        print("--confirm-merge 只能与 --merge-candidate 或 --merge-sessions 一起使用。", file=sys.stderr)
+        sys.exit(2)
+    if args.merge_candidates and (args.merge_project or args.confirm_merge):
+        print("--merge-candidates 仅生成候选，不能同时提供确认归档参数。", file=sys.stderr)
+        sys.exit(2)
+    if args.merge_candidates and args.long_term:
+        print("合并候选扫描不能同时写入 AI开发参考。", file=sys.stderr)
+        sys.exit(2)
+    if merge_execution and not args.confirm_merge:
+        print("合并归档会修改项目总结和来源断点；请在用户确认后添加 --confirm-merge。", file=sys.stderr)
+        sys.exit(2)
+    if merge_execution and not (args.merge_project or "").strip():
+        print("合并归档必须提供 --merge-project <项目名>。", file=sys.stderr)
+        sys.exit(2)
+    link_execution = bool(args.link_candidate)
+    if args.confirm_link and not link_execution:
+        print("--confirm-link 只能与 --link-candidate 一起使用。", file=sys.stderr)
+        sys.exit(2)
+    if args.link_candidates and args.confirm_link:
+        print("--link-candidates 仅生成候选，不能同时提供确认写入参数。", file=sys.stderr)
+        sys.exit(2)
+    if link_execution and not args.confirm_link:
+        print("写入双向 wikilink 会修改两篇文档；请在用户确认后添加 --confirm-link。", file=sys.stderr)
+        sys.exit(2)
+    if (args.link_candidates or link_execution) and args.long_term:
+        print("跨文档链接流程不能同时写入 AI开发参考。", file=sys.stderr)
+        sys.exit(2)
+    link_repair_execution = bool(args.repair_link_candidate)
+    if args.confirm_link_repair and not link_repair_execution:
+        print("--confirm-link-repair 只能与 --repair-link-candidate 一起使用。", file=sys.stderr)
+        sys.exit(2)
+    if args.repair_link_candidates and args.confirm_link_repair:
+        print("--repair-link-candidates 仅生成候选，不能同时提供确认修复参数。", file=sys.stderr)
+        sys.exit(2)
+    if link_repair_execution and not args.confirm_link_repair:
+        print("修复断裂 wikilink 会修改来源文档；请在用户确认后添加 --confirm-link-repair。", file=sys.stderr)
+        sys.exit(2)
+    if (args.repair_link_candidates or link_repair_execution) and args.long_term:
+        print("断裂链接修复流程不能同时写入 AI开发参考。", file=sys.stderr)
+        sys.exit(2)
+    vault_root = Path(args.vault_root).expanduser().resolve()
+    global LINK_VAULT_ROOT
+    LINK_VAULT_ROOT = vault_root
+    work_dir = vault_root / "Codex工作记录"
+    projects_dir = vault_root / "项目总结"
+    note_dir = work_dir / "会话断点"
+    if not note_dir.is_dir():
+        print(f"未找到目录：{note_dir}")
+        sys.exit(1)
+
+    if args.cleanup_checkpoints:
+        run_checkpoint_cleanup(args, vault_root, note_dir)
+        return
+
+    if args.audit:
+        audit_sessions_root = Path(args.sessions_root).expanduser().resolve() if args.sessions_root else default_sessions_root()
+        report = audit_vault(vault_root, args.stale_days, audit_sessions_root)
+        if args.apply_metadata:
+            try:
+                updated_paths = apply_metadata_candidates(report["records"], args.metadata_sessions)
+            except ValueError as error:
+                print(str(error), file=sys.stderr)
+                sys.exit(2)
+            print("Metadata 回填完成：" + ("、".join(str(path) for path in updated_paths) if updated_paths else "没有需要写入的字段。"))
+            report = audit_vault(vault_root, args.stale_days, audit_sessions_root)
+        print(format_audit_report(report, args.limit))
+        return
+
+    if args.link_candidates or link_execution:
+        maintenance_records = scan_vault(vault_root)
+        if args.link_candidates:
+            print(format_link_candidates(link_candidates(maintenance_records), args.limit))
+            return
+        try:
+            updated_paths = apply_link_candidate(maintenance_records, args.link_candidate)
+        except ValueError as error:
+            print(str(error), file=sys.stderr)
+            sys.exit(2)
+        print("双向 wikilink 写入完成：" + "、".join(str(path) for path in updated_paths))
+        return
+
+    if args.repair_link_candidates or link_repair_execution:
+        maintenance_records = scan_vault(vault_root)
+        if args.repair_link_candidates:
+            print(format_broken_link_repair_candidates(broken_link_repair_candidates(maintenance_records), args.limit))
+            return
+        try:
+            updated_path = apply_broken_link_repair_candidate(maintenance_records, args.repair_link_candidate)
+        except ValueError as error:
+            print(str(error), file=sys.stderr)
+            sys.exit(2)
+        print("断裂 wikilink 修复完成：" + str(updated_path))
+        return
+
+    records = note_records(note_dir)
+    if args.merge_candidates:
+        candidates = build_merge_candidates(records)
+        print_merge_candidates(candidates, len(eligible_merge_records(records)), vault_root, args.limit)
+        return
+
+    if merge_execution:
+        try:
+            project = merge_project_name(args.merge_project)
+            if args.merge_candidate:
+                candidate = next(
+                    (item for item in build_merge_candidates(records) if item["id"] == args.merge_candidate),
+                    None,
+                )
+                if candidate is None:
+                    raise ValueError("未找到该合并候选。候选可能已归档或发生变化，请重新运行 --merge-candidates。")
+                selected = candidate["records"]
+            else:
+                selected = explicit_merge_records(records, args.merge_sessions)
+        except ValueError as error:
+            print(str(error), file=sys.stderr)
+            sys.exit(2)
+        tags = dedupe_texts(["codex/方案", project, "知识合成"])
+        print_archive_result(args, vault_root, project, selected, tags)
+        return
+
+    project, selected, tags = select_records(records, args, projects_dir)
+    if len(selected) < 1:
+        print("没有找到可合成的断点。")
+        sys.exit(1)
+    print_archive_result(args, vault_root, project, selected, tags)
 
 
 if __name__ == "__main__":

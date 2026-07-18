@@ -1,5 +1,5 @@
-# Codex CheckPoint V0.8.1
-*Codex 会话断点 V0.8.1*
+# Codex CheckPoint V0.9.0
+*Codex 会话断点 V0.9.0*
 
 为 Codex 与 Obsidian 提供会话断点、持续恢复、项目总结和知识检索。仓库只包含运行时 hook、skills、README、许可证和忽略规则，不包含安装、迁移、打包或解包脚本。
 
@@ -37,16 +37,36 @@ This project is based on [hjm4839-coder/checkpoint](https://github.com/hjm4839-c
   Sensitive-information redaction: generated checkpoints, daily indexes, project summaries, the homepage, and AI development references replace common Bearer tokens, API keys, access tokens, passwords, JWTs, `sk-` keys, cookies, and private keys. Ordinary project Markdown files are neither scanned nor rewritten.
 - 搜索与合成：保留本地 `search` 与 `synthesize` skills；合成必须指定项目或标签。聚类合成额外要求用户确认范围和目标项目名，未确认的聚类不能写入知识库。\
   Search and synthesis: local `search` and `synthesize` skills remain available. Synthesis requires an explicit project or tag. Cluster synthesis also requires a user-confirmed scope and target project name; an unconfirmed cluster cannot write to the vault.
+- 用户确认合并：`synthesize --merge-candidates` 只读取未归档断点并报告高置信候选。候选需要共同项目加具体特征，或至少三个非泛化特征；用户确认候选编号和目标项目后，才可归档到一个独立项目总结。用户也可直接指定 session ID 与目标项目。\
+  User-confirmed merge: `synthesize --merge-candidates` reads only unarchived checkpoints and reports high-confidence proposals. A proposal needs a shared project plus a concrete signal, or at least three non-generic signals; archival to one independent project summary requires a user-approved proposal ID and target project. Users can also directly specify session IDs and a target project.
+- 知识库维护：`synthesize --audit` 只读检查空 Markdown、frontmatter、重复 session、缺少 rollout、归档目标、wikilink、项目总结、验证时效、metadata 候选与知识整理建议。metadata 回填、双向链接和断裂链接修复都要求指定候选并获得用户确认；自动 hook 不运行这些维护操作。\
+  Vault maintenance: `synthesize --audit` read-checks empty Markdown, frontmatter, duplicate sessions, missing rollouts, archive targets, wikilinks, project summaries, verification freshness, metadata proposals, and knowledge-organization suggestions. Metadata backfill, reciprocal links, and broken-link repair all require a specified proposal and user confirmation; automatic hooks never run these maintenance actions.
+- 增量搜索索引：`search` 使用 vault 专属的 SQLite 缓存增量索引 Markdown，保持 aliases、keywords、tags、标题和正文的原有排序，并在索引不可用时回退直接扫描。显式 `--semantic` 使用固定版本的本地 `multilingual-e5-small`，按标题和段落分块召回；默认检索不会下载模型或改变现有排序。\
+  Incremental search index: `search` uses a vault-specific SQLite cache to incrementally index Markdown while preserving aliases, keywords, tags, title, and body ranking; it falls back to direct scanning when the index is unavailable. Explicit `--semantic` uses a pinned local `multilingual-e5-small` model with title-aware paragraph chunks; default retrieval never downloads a model or changes the existing ordering.
+- 验证时效：用户提出测试、验证、检查、诊断、排查或复测时，恢复注入会要求重新执行当前环境中的相关命令，历史“已验证”内容仅作为线索。\
+  Verification freshness: when users ask to test, verify, check, diagnose, troubleshoot, or retest, recovery injection requires relevant commands to be re-run in the current environment; historical “verified” content is only a lead.
 - PreTool 提醒：写入项目文档前提示已有相关材料。\
   PreTool reminder: project-document writes are checked against existing material.
+
+## V0.9.0
+*Version 0.9.0*
+
+- 确认式会话合并：`synthesize --merge-candidates` 仅报告未归档断点的高置信关联。写入同一份平面项目总结前，用户必须确认候选编号和目标项目；直接指定 session 也需要确认参数。\
+  Confirmed session merging: `synthesize --merge-candidates` only reports high-confidence relationships among unarchived checkpoints. Writing one flat project summary requires the user to confirm the proposal ID and target project; direct session selection also requires confirmation.
+- 知识库维护：新增只读 `--audit`、metadata 回填候选、跨文档链接候选和断裂链接修复候选。每一类写入都需要展示证据并取得用户对指定候选的确认，自动 hook 不执行维护操作。\
+  Vault maintenance: added read-only `--audit`, metadata-backfill proposals, cross-document link proposals, and broken-link repair proposals. Every write presents evidence and requires approval for the specified proposal; automatic hooks never perform maintenance.
+- 本地检索：新增 vault 专属 SQLite 增量索引，以及显式、离线的 `--semantic` 段落级语义召回。默认词法检索的排序和网络边界保持不变，模型不可用时回退词法检索。\
+  Local retrieval: added a vault-specific incremental SQLite index and explicit offline, paragraph-level `--semantic` recall. Default lexical ranking and network boundaries remain unchanged, and unavailable models fall back to lexical retrieval.
+- 验证时效：新增 `$verify`，测试、检查、诊断和复测任务会将历史知识作为线索，并以当前环境重新执行的结果为准。\
+  Verification freshness: added `$verify`; testing, checking, diagnosis, and retesting use historical knowledge as leads and rely on commands re-run in the current environment.
 
 ## V0.8.1
 *Version 0.8.1*
 
 - 后台维护：仅迁入 Stop Hook 的核心提速能力。后台任务会串行刷新项目总结和知识库首页，并记录启动、完成或失败；启动失败时自动回退到同步维护。\
   Background maintenance: only the core Stop-hook acceleration is included. Background work serially refreshes project summaries and the vault homepage and records scheduling, completion, or failure; a spawn failure falls back to synchronous maintenance.
-- 写入边界：没有引入上游的健康检查、60 分钟节流或自动 AI开发参考写入。AI开发参考仍仅由获得用户明确授权的 `$synthesize` 写入。\
-  Write boundaries: this release does not add the upstream health check, 60-minute throttle, or automatic AI development reference writes. AI development references remain writable only through explicitly authorized `$synthesize`.
+- 写入边界：没有引入上游的自动健康检查、60 分钟节流或自动 AI开发参考写入。`--audit` 仅由用户手动调用且默认只读；AI开发参考仍仅由获得用户明确授权的 `$synthesize` 写入。\
+  Write boundaries: this release does not add the upstream automatic health check, 60-minute throttle, or automatic AI development reference writes. `--audit` is manual and read-only by default; AI development references remain writable only through explicitly authorized `$synthesize`.
 
 ## V0.8.0
 *Version 0.8.0*
@@ -105,12 +125,23 @@ cd Codex-CheckPoint
 mkdir -p ~/.codex/hooks ~/.codex/skills
 cp .codex/redaction.py ~/.codex/redaction.py
 cp .codex/metadata.py ~/.codex/metadata.py
+cp .codex/maintenance.py ~/.codex/maintenance.py
 cp .codex/hooks/*.py ~/.codex/hooks/
 cp -R .codex/skills/checkpoint ~/.codex/skills/checkpoint
 cp -R .codex/skills/search ~/.codex/skills/search
 cp -R .codex/skills/synthesize ~/.codex/skills/synthesize
+cp -R .codex/skills/verify ~/.codex/skills/verify
 # 将 .codex/AGENTS.md 的规则合并到 ~/.codex/AGENTS.md，保留已有本地规则。
 chmod +x ~/.codex/hooks/*.py
+```
+
+语义检索为可选能力。首次准备本地模型时安装固定依赖并联网缓存模型一次；后续 `search --semantic` 固定离线。
+
+Semantic retrieval is optional. Install the pinned dependencies and cache the model online once during initial preparation; later `search --semantic` calls remain offline.
+
+```bash
+python3 -m pip install --user --only-binary=:all: -r ~/.codex/skills/search/requirements-semantic.txt
+HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0 python3 -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('intfloat/multilingual-e5-small')"
 ```
 
 将下列 hook 注册到 `~/.codex/hooks.json`，并将 vault 路径替换为实际路径。
@@ -162,17 +193,18 @@ https://github.com/DELTANACNCORE/Codex-CheckPoint.git
 2. 克隆仓库到临时工作目录或用户指定目录。
 3. 将仓库 .codex/redaction.py 复制到 ~/.codex/redaction.py。
 4. 将仓库 .codex/metadata.py 复制到 ~/.codex/metadata.py。
-5. 将仓库 .codex/hooks/*.py 复制到 ~/.codex/hooks/。
-6. 将 checkpoint、search、synthesize 复制到 ~/.codex/skills/。
-7. 确保 ~/.codex/config.toml 的 [features] 包含 hooks = true。
-8. 读取并保留 ~/.codex/hooks.json 中已有的非本项目 hook；注册以下三个 hook：
+5. 将仓库 .codex/maintenance.py 复制到 ~/.codex/maintenance.py。
+6. 将仓库 .codex/hooks/*.py 复制到 ~/.codex/hooks/。
+7. 将 checkpoint、search、synthesize、verify 复制到 ~/.codex/skills/。
+8. 确保 ~/.codex/config.toml 的 [features] 包含 hooks = true。
+9. 读取并保留 ~/.codex/hooks.json 中已有的非本项目 hook；注册以下三个 hook：
    - Stop: python3 ~/.codex/hooks/stop-wrapper.py --vault-root <vault-path>
    - UserPromptSubmit: python3 ~/.codex/hooks/stop-wrapper.py --vault-root <vault-path>
    - PreToolUse: python3 ~/.codex/hooks/pretool-wrapper.py --vault-root <vault-path>
-9. 将仓库 .codex/AGENTS.md 的项目归档规则合并到 ~/.codex/AGENTS.md，保留已有本地规则。
-10. 为复制后的 hook 添加可执行权限。
-11. 运行 python3 ~/.codex/skills/checkpoint/checkpoint.py --vault-root <vault-path> 进行验证。
-12. 报告 hooks.json 的实际修改、写入的断点路径和验证结果。不要输出令牌、rollout 内容或私有 vault 内容。
+10. 将仓库 .codex/AGENTS.md 的项目归档规则合并到 ~/.codex/AGENTS.md，保留已有本地规则。
+11. 为复制后的 hook 添加可执行权限。
+12. 运行 python3 ~/.codex/skills/checkpoint/checkpoint.py --vault-root <vault-path> 进行验证。
+13. 报告 hooks.json 的实际修改、写入的断点路径和验证结果。不要输出令牌、rollout 内容或私有 vault 内容。
 ```
 
 ```text
@@ -185,17 +217,18 @@ Enable the complete Codex and Obsidian knowledge workflow on this machine.
 2. Clone the repository into a temporary directory or a user-selected directory.
 3. Copy .codex/redaction.py into ~/.codex/redaction.py.
 4. Copy .codex/metadata.py into ~/.codex/metadata.py.
-5. Copy .codex/hooks/*.py into ~/.codex/hooks/.
-6. Copy checkpoint, search, and synthesize into ~/.codex/skills/.
-7. Ensure [features] in ~/.codex/config.toml contains hooks = true.
-8. Read and preserve unrelated hooks in ~/.codex/hooks.json, then register these hooks:
+5. Copy .codex/maintenance.py into ~/.codex/maintenance.py.
+6. Copy .codex/hooks/*.py into ~/.codex/hooks/.
+7. Copy checkpoint, search, synthesize, and verify into ~/.codex/skills/.
+8. Ensure [features] in ~/.codex/config.toml contains hooks = true.
+9. Read and preserve unrelated hooks in ~/.codex/hooks.json, then register these hooks:
    - Stop: python3 ~/.codex/hooks/stop-wrapper.py --vault-root <vault-path>
    - UserPromptSubmit: python3 ~/.codex/hooks/stop-wrapper.py --vault-root <vault-path>
    - PreToolUse: python3 ~/.codex/hooks/pretool-wrapper.py --vault-root <vault-path>
-9. Merge the project-archiving rules from .codex/AGENTS.md into ~/.codex/AGENTS.md while preserving existing local rules.
-10. Add executable permission to copied hook files.
-11. Verify with python3 ~/.codex/skills/checkpoint/checkpoint.py --vault-root <vault-path>.
-12. Report the actual hooks.json changes, checkpoint path, and verification result. Do not expose tokens, rollout content, or private vault content.
+10. Merge the project-archiving rules from .codex/AGENTS.md into ~/.codex/AGENTS.md while preserving existing local rules.
+11. Add executable permission to copied hook files.
+12. Verify with python3 ~/.codex/skills/checkpoint/checkpoint.py --vault-root <vault-path>.
+13. Report the actual hooks.json changes, checkpoint path, and verification result. Do not expose tokens, rollout content, or private vault content.
 ```
 
 ## 日常使用
@@ -211,9 +244,13 @@ Enable the complete Codex and Obsidian knowledge workflow on this machine.
    Invoke search to find knowledge and specify a project or tag when using synthesize. Cluster synthesis is available only after the user confirms the scope and target project.
 5. 需要清理伪对话或重复断点时，先运行 `synthesize --cleanup-checkpoints` 审阅候选；用户确认后再使用 `--apply-cleanup`。\
    To clean pseudo or duplicate checkpoints, first review candidates with `synthesize --cleanup-checkpoints`, then use `--apply-cleanup` after user confirmation.
-6. 接手项目时优先读取 `项目总结/<项目名>.md`；已确认的父项目才读取 `项目总结/<父项目>/项目总结.md`。\
+6. 需要合并相关会话时，先运行 `synthesize --merge-candidates`；展示候选后，只有用户确认候选编号和独立项目名才可归档。用户直接指定 session ID 时仍须提供目标项目和确认参数。\
+   To merge related sessions, first run `synthesize --merge-candidates`; after showing a proposal, archive only when the user confirms its ID and an independent project name. Direct session-ID selection still requires a target project and confirmation flag.
+7. 需要检查结构、旧 metadata、知识整理建议或验证时效时运行 `synthesize --audit`。需要回填 metadata、添加跨文档链接或修复断裂链接时，先展示候选，再由用户确认指定候选。\
+   Run `synthesize --audit` to inspect structure, legacy metadata, knowledge-organization suggestions, or verification freshness. For metadata backfill, cross-document links, or broken-link repair, show proposals first and obtain confirmation for the specified proposal.
+8. 接手项目时优先读取 `项目总结/<项目名>.md`；已确认的父项目才读取 `项目总结/<父项目>/项目总结.md`。\
    When resuming a project, read `项目总结/<项目名>.md` first; read `项目总结/<父项目>/项目总结.md` only for confirmed parent projects.
-7. 需要 AI开发参考时明确调用 `synthesize` 并授权写入；普通 checkpoint 不会生成该文件。\
+9. 需要 AI开发参考时明确调用 `synthesize` 并授权写入；普通 checkpoint 不会生成该文件。\
    Explicitly invoke `synthesize` and authorize the write for an AI development reference; ordinary checkpoints never generate it.
 
 ## 目录结构
@@ -222,6 +259,7 @@ Enable the complete Codex and Obsidian knowledge workflow on this machine.
 ```text
 .codex/
 ├── metadata.py
+├── maintenance.py
 ├── redaction.py
 ├── hooks/
 │   ├── checkpoint.py
@@ -232,7 +270,8 @@ Enable the complete Codex and Obsidian knowledge workflow on this machine.
 └── skills/
     ├── checkpoint/
     ├── search/
-    └── synthesize/
+    ├── synthesize/
+    └── verify/
 ```
 
 ```text
@@ -252,7 +291,11 @@ vault/
 
 独立项目只保留一份 `项目总结/<项目名>.md`。用户提到“归档到同一项目”或“放到父项目”时，Codex 必须询问该项目是否归属于该父项目；得到明确确认后，才可创建 `项目总结/<父项目>/`，并在其 `项目总结.md` 标记 `group_confirmed: true`。没有归属关系的多个项目在同一次会话中合并为一篇项目总结，并将所有会话标识写入 `session_ids`。
 
+相关会话的自动识别只生成候选，不会自动创建项目总结、移动断点或变更索引。用户确认候选编号和独立项目名后，才会将该候选涉及的 session 归档到一篇平面项目总结；用户直接指定的 session 也遵循同一确认边界。
+
 An independent project keeps one `项目总结/<项目名>.md`. When a user asks to archive work under the same or a parent project, Codex must ask whether the project belongs to that parent. Only an explicit confirmation permits `项目总结/<父项目>/`, whose `项目总结.md` must contain `group_confirmed: true`. Unrelated projects from one session are merged into one project summary with all session identifiers in `session_ids`.
+
+Automatic related-session detection produces proposals only; it never creates a project summary, moves a checkpoint, or changes an index. A proposal's sessions are archived into one flat project summary only after the user confirms the proposal ID and independent project name; directly specified sessions follow the same confirmation boundary.
 
 ## 许可证
 *License*

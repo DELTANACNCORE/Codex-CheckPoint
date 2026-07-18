@@ -1,0 +1,5 @@
+# Optional local semantic retrieval for intfloat/multilingual-e5-small.
+# Keep these versions paired: newer sentence-transformers releases no longer
+# load the model's legacy Pooling configuration reliably.
+sentence-transformers==3.4.1
+transformers==4.48.3

@@ -46,6 +46,11 @@ REFERENCE_GENERIC_TERMS = GENERIC_KEYWORDS | {
 RECOVERY_INTENT = ("恢复", "继续", "接手", "上次", "重启", "断点", "checkpoint", "知识库", "项目总结")
 DEFAULT_RESTART_INTENT = ("重启事项", "按重启", "继续上一个", "恢复上一个", "上次任务")
 SEARCH_INTENT = RECOVERY_INTENT + ("查找", "搜索", "检索", "资料", "文档")
+VERIFICATION_INTENT = ("测试", "验证", "检查", "诊断", "排查", "复测")
+VERIFICATION_NOTICE = (
+    "验证时效要求：当前任务包含检查、测试、验证或诊断。知识库中的历史结果只能作为待核对线索；"
+    "执行前必须重新运行相关命令、检查当前环境，并在结果与历史结论不一致时以当前结果为准。"
+)
 
 
 def normalize_event(raw: str) -> dict:
@@ -398,6 +403,13 @@ def should_search_knowledge(prompt: str) -> bool:
     return any(marker in lowered for marker in SEARCH_INTENT)
 
 
+def requires_live_verification(prompt: str) -> bool:
+    lowered = (prompt or "").lower()
+    if any(marker in lowered for marker in VERIFICATION_INTENT):
+        return True
+    return bool(re.search(r"\b(?:test|verify|check|diagnose|debug)\b", lowered))
+
+
 def main() -> None:
     raw = sys.stdin.read()
     event = normalize_event(raw)
@@ -430,6 +442,8 @@ def main() -> None:
             "先向用户说明再使用；与当前问题无关时忽略：\n\n"
             f"{result}"
         )
+    if requires_live_verification(prompt):
+        context = VERIFICATION_NOTICE + "\n\n" + context
     print(json.dumps({
         "hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",

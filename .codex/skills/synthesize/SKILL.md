@@ -16,6 +16,10 @@ Synthesize a knowledge document from multiple related checkpoint notes.
 
 Calling `$synthesize` alone does not select checkpoints or write a project summary. The user must explicitly provide a project, tag, or a confirmed clustering target. Only then does the script write the project summary and mark participating sessions and the summary as knowledge-archived. It then uses recorded user-message count and material length to classify the selection: long sessions only prompt Codex to ask whether an AI development reference should be extracted; short sessions explicitly state that no AI development reference was written. The user can explicitly force extraction regardless of length.
 
+用户要求查找可合并会话时，先运行候选扫描并展示候选编号、涉及会话、共同依据和建议项目。候选扫描只读取未归档会话，不会修改 vault。收到明确同意与目标项目名后，才可执行归档。
+
+When the user asks to find mergeable sessions, run the candidate scan first and present the candidate ID, source sessions, shared evidence, and suggested project. Candidate scanning reads only unarchived sessions and never changes the vault. Archive only after explicit approval and a target project name.
+
 AI开发参考属于用户控制的核心知识，只能在用户明确要求时创建或覆盖。它应服务于资料量大、需要跨新任务复用的公司项目、学习项目或长期研究，而非普通会话摘要。
 
 AI development reference is user-controlled core knowledge. Create or replace it only when the user explicitly requests it. It serves material-rich company, learning, or research work that benefits from reuse across new tasks, not ordinary session summaries.
@@ -33,6 +37,16 @@ Project summaries and user-authorized AI development references enrich `aliases`
   `Organize recent Codex checkpoints by tag`
 - `按项目 synthesize checkpoint迁到Codex`\
   `Synthesize checkpoint迁到Codex by project`
+- `检查哪些会话可以合并归档`\
+  `Review sessions that can be merged after confirmation`
+- `审计知识库结构和失效链接`\
+  `Audit vault structure and broken links`
+- `查找可以添加的跨文档链接`\
+  `Review cross-document link proposals`
+- `检查哪些项目总结需要人工整理或刷新`\
+  `Review project summaries that may need manual synthesis or refresh`
+- `查找可以安全修复的断裂链接`\
+  `Review safe broken-link repair proposals`
 - `清理伪对话和重复断点`\
   `Review pseudo and duplicate checkpoints`
 
@@ -53,6 +67,98 @@ Tag mode only processes the tag explicitly named by the user. Cluster mode is re
 python3 ~/.codex/skills/synthesize/synthesize.py --vault-root "$OBSIDIAN_VAULT" --tag <标签>
 python3 ~/.codex/skills/synthesize/synthesize.py --vault-root "$OBSIDIAN_VAULT" --cluster --cluster-project <项目名> --confirm-cluster
 ```
+
+## 知识库审计
+*Vault Audit*
+
+`--audit` 只读检查空 Markdown、断点 frontmatter、重复 session、缺少 rollout、归档目标、项目总结、wikilink、验证时效、metadata 回填候选和知识整理建议。审计不会写入报告、项目总结、断点或索引。
+
+`--audit` read-checks empty Markdown, checkpoint frontmatter, duplicate sessions, missing rollouts, archive targets, project summaries, wikilinks, verification freshness, metadata-backfill proposals, and knowledge-organization suggestions. It never writes a report, project summary, checkpoint, or index.
+
+```bash
+python3 ~/.codex/skills/synthesize/synthesize.py --vault-root "$OBSIDIAN_VAULT" --audit --stale-days 30
+```
+
+审计列出的 metadata 候选只能由用户逐条或按明确 session 范围确认。先展示候选、session ID 和拟写入字段，再获得明确同意；已有人工 `aliases` 或 `keywords` 保持原值。重复 session ID 必须先用断点清理处理。
+
+Metadata proposals from an audit require item-level or explicitly scoped session confirmation. Show the proposal, session ID, and fields first, then obtain explicit approval; existing manual `aliases` or `keywords` remain unchanged. Duplicate session IDs must be handled through checkpoint cleanup first.
+
+知识整理建议只依据断点中已写入的明确项目字段，提示尚未归档会话或可能需要刷新项目总结的材料。建议不会推断父项目，不会选择会话，也不会构成归档授权；实际归档仍需用户明确指定项目或确认合并候选。
+
+Knowledge-organization suggestions use only explicit project fields already stored in checkpoints. They surface unarchived material or project summaries that may need refresh. A suggestion never infers a parent project, selects sessions, or authorizes archival; actual archival still needs a user-specified project or a confirmed merge proposal.
+
+```bash
+python3 ~/.codex/skills/synthesize/synthesize.py --vault-root "$OBSIDIAN_VAULT" --audit --apply-metadata --metadata-sessions <session-id> --confirm-metadata
+```
+
+## 跨文档链接
+*Cross-document Links*
+
+`--link-candidates` 只根据项目、aliases、keywords、tags 与可用标题生成高置信候选。共同项目仍需至少一个具体特征；没有共同项目时需要至少三个具体特征。正文路径、写入回执和宽泛工作流词不会参与关联。
+
+`--link-candidates` generates high-confidence proposals from projects, aliases, keywords, tags, and usable titles only. A shared project still needs one concrete feature; without one, three concrete features are required. Body paths, write receipts, and broad workflow terms do not participate.
+
+```bash
+python3 ~/.codex/skills/synthesize/synthesize.py --vault-root "$OBSIDIAN_VAULT" --link-candidates
+```
+
+扫描后先展示候选编号、两篇文档和共同依据。用户明确确认后，才在两篇文档各自的 `## 相关资料` 区加入一个 root-relative wikilink；现有正文和人工链接保持不变。
+
+After scanning, show the candidate ID, both documents, and the shared evidence. Only explicit user approval adds one root-relative wikilink to each document's `## 相关资料` section; existing body text and manual links remain unchanged.
+
+```bash
+python3 ~/.codex/skills/synthesize/synthesize.py --vault-root "$OBSIDIAN_VAULT" --link-candidate <候选编号> --confirm-link
+```
+
+## 断裂链接修复
+*Broken-link Repair*
+
+`--repair-link-candidates` 只处理当前无法解析的 wikilink。替代目标必须在 aliases、标题或文件名上唯一匹配；相近的多个候选会被拒绝，正文词重叠不会参与替换判断。
+
+`--repair-link-candidates` considers only currently unresolved wikilinks. A replacement must uniquely match an alias, title, or filename; close competing candidates are rejected, and body-word overlap does not influence replacement selection.
+
+```bash
+python3 ~/.codex/skills/synthesize/synthesize.py --vault-root "$OBSIDIAN_VAULT" --repair-link-candidates
+```
+
+扫描输出来源文档、原始链接、替代目标和匹配依据。用户明确确认后，脚本仅在来源文档中替换该断裂链接，保留原有显示别名和章节锚点。
+
+The scan prints the source document, original link, replacement target, and matching evidence. After explicit approval, the script replaces only that broken link in the source document while preserving its display alias and heading anchor.
+
+```bash
+python3 ~/.codex/skills/synthesize/synthesize.py --vault-root "$OBSIDIAN_VAULT" --repair-link-candidate <候选编号> --confirm-link-repair
+```
+
+## 合并候选
+*Merge Proposals*
+
+`--merge-candidates` 只扫描未知识归档、标题可用的会话断点。候选需要共同项目加一个具体特征，或至少三个非泛化特征；`checkpoint`、`Codex`、`hook`、`知识库`、`Docker`、`运维` 等宽泛词不能单独形成候选。扫描结果不能作为归档授权。
+
+`--merge-candidates` scans only unarchived checkpoint notes with usable titles. A proposal requires a shared project plus one concrete signal, or at least three non-generic signals; broad terms such as `checkpoint`, `Codex`, `hook`, `知识库`, `Docker`, and `运维` cannot create a proposal alone. Scan output is never archive authorization.
+
+```bash
+python3 ~/.codex/skills/synthesize/synthesize.py --vault-root "$OBSIDIAN_VAULT" --merge-candidates
+```
+
+扫描结束后，Codex 必须向用户展示候选，并询问：`是否将候选 <候选编号> 归档到 项目总结/<项目名>.md？` 只有用户明确同意后，才使用候选编号和目标项目执行归档。
+
+After scanning, Codex must show the proposal and ask: `是否将候选 <候选编号> 归档到 项目总结/<项目名>.md？` Only an explicit user approval permits archival with the candidate ID and target project.
+
+```bash
+python3 ~/.codex/skills/synthesize/synthesize.py --vault-root "$OBSIDIAN_VAULT" --merge-candidate <候选编号> --merge-project <项目名> --confirm-merge
+```
+
+用户明确指定 session ID 与项目名时，可跳过候选扫描。该路径仍要求 `--confirm-merge`，并且仅归档指定的 session；重复 session ID、已归档 session 或父项目路径会被拒绝。
+
+When the user explicitly supplies session IDs and a project name, candidate scanning can be skipped. This path still requires `--confirm-merge` and archives only the specified sessions; duplicate session IDs, archived sessions, and parent-project paths are rejected.
+
+```bash
+python3 ~/.codex/skills/synthesize/synthesize.py --vault-root "$OBSIDIAN_VAULT" --merge-sessions <session-id-1> <session-id-2> --merge-project <项目名> --confirm-merge
+```
+
+合并归档默认只写入独立项目文件 `项目总结/<项目名>.md`。用户要求归入父项目时，必须先询问：`该项目是否归属于‘<父项目>’？` 得到明确确认后才可使用已有的父项目归档规则。
+
+Merge archival writes only the independent project file `项目总结/<项目名>.md` by default. When the user requests a parent project, first ask: `该项目是否归属于‘<父项目>’？` Use the existing parent-project archiving rules only after explicit confirmation.
 
 ## 断点清理
 *Checkpoint Cleanup*
@@ -81,6 +187,16 @@ Run apply mode only after the user explicitly confirms the candidates. It delete
 ```bash
 python3 ~/.codex/skills/synthesize/synthesize.py --vault-root "$OBSIDIAN_VAULT" --cleanup-checkpoints --apply-cleanup
 ```
+
+## 验证时效
+*Verification Freshness*
+
+用户提出测试、验证、检查、诊断、排查或复测时，历史断点和项目总结只能提供线索。Codex 必须在当前环境重新执行对应命令或检查；当前结果与历史结论冲突时，以当前结果为准。
+
+When the user asks to test, verify, check, diagnose, troubleshoot, or retest, historical checkpoints and project summaries provide leads only. Codex must re-run the relevant command or inspection in the current environment; current results prevail over conflicting historical conclusions.
+
+可调用 `$verify` 查看这一执行边界。\
+Use `$verify` to apply this execution boundary.
 
 ## AI开发参考
 *AI Development Reference*
