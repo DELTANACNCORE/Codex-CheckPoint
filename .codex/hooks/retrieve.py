@@ -27,6 +27,13 @@ REFERENCE_DIR = VAULT_ROOT / "AI开发参考"
 LEGACY_REFERENCE_DIR = VAULT_ROOT / "长期经验总结"
 HOMEPAGE = VAULT_ROOT / "知识库首页.md"
 SEARCH_SCRIPT = Path(__file__).resolve().parents[1] / "skills" / "search" / "search.py"
+CODEX_HOME = Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser().resolve()
+RESUME_BIND_DIR = CODEX_HOME / "cache" / "checkpoint-resume"
+SESSION_ID_RE = re.compile(
+    r"\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b",
+    re.IGNORECASE,
+)
+SESSION_PREFIX_RE = re.compile(r"\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4})\b", re.IGNORECASE)
 MAX_CONTEXT_CHARS = 2200
 RECOVERY_SECTIONS = (
     "可直接续接的结论",
@@ -134,7 +141,78 @@ def find_session_note(session_id: str) -> Path | None:
         matched = re.search(r'^session_id:\s*"([^"]+)"', text, re.MULTILINE)
         if matched and matched.group(1) == session_id:
             return path
+        related = extract_list(text, "session_ids")
+        if session_id in related:
+            return path
+        related = extract_list(text, "continuation_session_ids")
+        if session_id in related:
+            return path
     return None
+
+
+def find_session_note_by_prefix(prefix: str) -> Path | None:
+    """按完整 session_id 或足够长的前缀定位断点。"""
+    needle = str(prefix or "").strip().lower()
+    if len(needle) < 12 or not NOTES_DIR.is_dir():
+        return None
+    exact = find_session_note(needle)
+    if exact is not None:
+        return exact
+    matches = []
+    for path in NOTES_DIR.rglob("*.md"):
+        text = read_text(path)
+        matched = re.search(r'^session_id:\s*"([^"]+)"', text, re.MULTILINE)
+        if not matched:
+            continue
+        session_id = matched.group(1).strip().lower()
+        if session_id.startswith(needle):
+            matches.append(path)
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def extract_session_ids_from_prompt(prompt: str) -> list[str]:
+    text = str(prompt or "")
+    found = []
+    for matched in SESSION_ID_RE.findall(text):
+        value = matched.lower()
+        if value not in found:
+            found.append(value)
+    if found:
+        return found
+    for matched in SESSION_PREFIX_RE.findall(text):
+        value = matched.lower()
+        if value not in found:
+            found.append(value)
+    return found
+
+
+def write_resume_binding(
+    runtime_session_id: str,
+    target_session_id: str,
+    note_path: Path,
+    source: str,
+) -> None:
+    """把当前运行会话绑定到指定恢复断点，供 Stop 写入时复用原笔记。"""
+    runtime_session_id = str(runtime_session_id or "").strip()
+    target_session_id = str(target_session_id or "").strip()
+    if not runtime_session_id or not target_session_id:
+        return
+    if runtime_session_id == target_session_id:
+        return
+    try:
+        RESUME_BIND_DIR.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "runtime_session_id": runtime_session_id,
+            "target_session_id": target_session_id,
+            "note_path": str(note_path),
+            "source": source,
+        }
+        path = RESUME_BIND_DIR / f"{runtime_session_id}.json"
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        return
 
 
 def projects_for_note(text: str) -> list[str]:
@@ -358,21 +436,43 @@ def render_ai_development_references(prompt: str) -> str:
 def recovery_brief(session_id: str, prompt: str) -> str:
     current_note = find_session_note(session_id)
     source = "当前会话断点"
+    resume_from_history = False
     if current_note is None:
         if not any(marker in prompt.lower() for marker in RECOVERY_INTENT):
             return ""
-        use_default = any(marker in prompt.lower() for marker in DEFAULT_RESTART_INTENT)
-        current_note = default_restart_note() if use_default else best_matching_note(keywords_for(prompt, []))
-        source = "知识库首页指定的默认断点" if use_default else "匹配到的历史会话断点"
+        for candidate_id in extract_session_ids_from_prompt(prompt):
+            current_note = find_session_note_by_prefix(candidate_id)
+            if current_note is not None:
+                source = "用户指定的会话断点"
+                resume_from_history = True
+                break
+        if current_note is None:
+            use_default = any(marker in prompt.lower() for marker in DEFAULT_RESTART_INTENT)
+            current_note = default_restart_note() if use_default else best_matching_note(keywords_for(prompt, []))
+            source = "知识库首页指定的默认断点" if use_default else "匹配到的历史会话断点"
+            resume_from_history = current_note is not None
     if current_note is None:
         return ""
     note_block, projects = render_note_brief(current_note)
     if not note_block:
         return ""
+    if resume_from_history and session_id:
+        target_session_id = extract_frontmatter_string(read_text(current_note), "session_id")
+        if target_session_id and target_session_id != session_id:
+            write_resume_binding(session_id, target_session_id, current_note, source)
     project_block = render_project_brief(projects)
     body = f"来源：{source}\n\n{note_block}"
     if project_block:
         body += "\n\n" + project_block
+    if resume_from_history and session_id:
+        target_session_id = extract_frontmatter_string(read_text(current_note), "session_id")
+        if target_session_id and target_session_id != session_id:
+            body += (
+                "\n\n"
+                "续接绑定：当前运行会话已绑定到上述历史断点。"
+                f"后续自动 checkpoint 应更新 session_id=`{target_session_id}` 对应笔记，"
+                "不要为当前运行会话另建新的会话断点文件。"
+            )
     return clamp(body, MAX_CONTEXT_CHARS)
 
 

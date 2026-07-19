@@ -45,6 +45,7 @@ VAULT_ROOT = Path(os.environ.get("OBSIDIAN_VAULT", "~/obsidian/知识库")).expa
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser().resolve()
 CODEX_SESSIONS_DIR = CODEX_HOME / "sessions"
 CODEX_SESSION_INDEX = CODEX_HOME / "session_index.jsonl"
+RESUME_BIND_DIR = CODEX_HOME / "cache" / "checkpoint-resume"
 SPACE_NAME = "Codex工作记录"
 HOMEPAGE_NAME = "知识库首页.md"
 INDEX_TAG = "codex/会话索引"
@@ -1321,8 +1322,58 @@ def _rename_checkpoint_note(note_path: Path, title: str, session_id: str) -> Pat
     return target_path
 
 
+def _resume_bind_path(runtime_session_id: str) -> Path:
+    return RESUME_BIND_DIR / f"{runtime_session_id}.json"
+
+
+def load_resume_binding(runtime_session_id: str) -> dict | None:
+    """读取 retrieve 写入的续接绑定，把新运行会话映射到历史断点。"""
+    runtime_session_id = str(runtime_session_id or "").strip()
+    if not runtime_session_id:
+        return None
+    path = _resume_bind_path(runtime_session_id)
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    target_session_id = str(payload.get("target_session_id") or "").strip()
+    if not target_session_id or target_session_id == runtime_session_id:
+        return None
+    note_path = str(payload.get("note_path") or "").strip()
+    return {
+        "runtime_session_id": runtime_session_id,
+        "target_session_id": target_session_id,
+        "note_path": note_path,
+        "source": str(payload.get("source") or "").strip(),
+    }
+
+
+def resolve_resume_note(index_dir: Path, binding: dict | None) -> tuple[Path | None, str]:
+    """把绑定解析为可写入的历史断点路径与主 session_id。"""
+    if not binding:
+        return None, ""
+    target_session_id = str(binding.get("target_session_id") or "").strip()
+    note_path_raw = str(binding.get("note_path") or "").strip()
+    if note_path_raw:
+        note_path = Path(note_path_raw).expanduser()
+        if note_path.is_file():
+            return note_path, target_session_id
+    if target_session_id:
+        found = find_note_by_session(index_dir, target_session_id)
+        if found is not None:
+            return found, target_session_id
+    return None, target_session_id
+
+
 def find_note_by_session(index_dir: Path, session_id: str):
-    """在 NOTE_DIR 中按 frontmatter 的 session_id 查找已存在的断点笔记。"""
+    """在 NOTE_DIR 中按主 session_id 或 session_ids 列表查找已存在的断点笔记。"""
+    session_id = str(session_id or "").strip()
+    if not session_id:
+        return None
     for p in sorted(index_dir.rglob("*.md")):
         try:
             text = p.read_text(encoding="utf-8")
@@ -1330,6 +1381,12 @@ def find_note_by_session(index_dir: Path, session_id: str):
             continue
         m = re.search(r'^session_id:\s*"([^"]+)"', text, re.MULTILINE)
         if m and m.group(1) == session_id:
+            return p
+        related = parse_frontmatter_list(text, "session_ids")
+        if session_id in related:
+            return p
+        related = parse_frontmatter_list(text, "continuation_session_ids")
+        if session_id in related:
             return p
     return None
 
@@ -1539,16 +1596,42 @@ def generate_session_note(session_id: str, ctx: dict, status: str, related: list
             f"archived_prompt_count: {ctx.get('archived_prompt_count', 0)}\n"
             f"archive_document: \"{ctx.get('archive_document', '')}\"\n"
         )
+    continuation_ids = []
+    for value in ctx.get("continuation_session_ids") or []:
+        item = str(value or "").strip()
+        if item and item != session_id and item not in continuation_ids:
+            continuation_ids.append(item)
+    runtime_session_id = str(ctx.get("runtime_session_id") or "").strip()
+    if runtime_session_id and runtime_session_id != session_id and runtime_session_id not in continuation_ids:
+        continuation_ids.append(runtime_session_id)
+    session_ids = [session_id]
+    for item in continuation_ids:
+        if item not in session_ids:
+            session_ids.append(item)
+    session_ids_line = "session_ids: " + json.dumps(session_ids, ensure_ascii=False) + "\n"
+    continuation_line = ""
+    if continuation_ids:
+        continuation_line = (
+            "continuation_session_ids: "
+            + json.dumps(continuation_ids, ensure_ascii=False)
+            + "\n"
+        )
     meta_lines = [
         f"**状态**: {label}",
         f"**最近归档**: {timestamp}",
         f"**平台**: {platform}",
         f"**会话 ID**: `{session_id}`",
     ]
+    if continuation_ids:
+        meta_lines.append("**续接会话**: " + ", ".join(f"`{item}`" for item in continuation_ids))
     project_refs = sorted(set(ctx.get("projects", [])) | set(ctx.get("external_projects", [])))
     if project_refs:
         meta_lines.append(f"**涉及项目**: {', '.join(project_refs)}")
-    meta_lines.append(f"**已记录用户消息**: {len(ctx.get('user_prompts', []))}")
+    prompt_count = len(ctx.get("user_prompts", []))
+    if continuation_ids:
+        meta_lines.append(f"**已记录用户消息**: {prompt_count}（最近续接会话）")
+    else:
+        meta_lines.append(f"**已记录用户消息**: {prompt_count}")
     meta_block = "\n".join(meta_lines)
     goals_block = _session_goal_block(ctx.get("user_prompts", []))
     assistant_block = _assistant_resume_block(
@@ -1570,6 +1653,10 @@ def generate_session_note(session_id: str, ctx: dict, status: str, related: list
         f"- 当前归档状态：{label}。",
         f"- 最近用户目标：{_short_resume_text((ctx.get('user_prompts') or ['（未提取到）'])[-1], 220)}",
     ]
+    if continuation_ids:
+        continuation_lines.append(
+            "- 本断点已绑定续接会话，自动 checkpoint 继续更新本文件，不另建同主题新断点。"
+        )
     if project_refs:
         continuation_lines.append(
             "- 优先读取涉及项目的单文件项目总结，再根据实际产出和下方结论继续。"
@@ -1595,7 +1682,7 @@ def generate_session_note(session_id: str, ctx: dict, status: str, related: list
     return redact_sensitive_text(f"""---
 date: "{now.strftime('%Y-%m-%d')}"
 session_id: "{session_id}"
-status: "{status}"
+{session_ids_line}status: "{status}"
 platform: "{platform}"
 projects: {json.dumps(sorted(ctx['projects']), ensure_ascii=False)}
 external_projects: {json.dumps(sorted(ctx.get('external_projects', [])), ensure_ascii=False)}
@@ -1605,7 +1692,7 @@ keywords: {json.dumps(keywords, ensure_ascii=False)}
 aliases: {json.dumps(aliases, ensure_ascii=False)}
 title_baseline: {json.dumps(title_baseline, ensure_ascii=False)}
 title_source: {json.dumps(title_source, ensure_ascii=False)}
-{archive_frontmatter}---
+{continuation_line}{archive_frontmatter}---
 
 # {topic}
 
@@ -2968,7 +3055,59 @@ def main():
     os.makedirs(NOTE_DIR, exist_ok=True)
     os.makedirs(UNCLASSIFIED_CHECKPOINT_DIR, exist_ok=True)
     os.makedirs(PROJECTS_DIR, exist_ok=True)
+    runtime_session_id = session_id
+    write_session_id = session_id
     existing_note = find_note_by_session(NOTE_DIR, session_id)
+    resume_binding = load_resume_binding(runtime_session_id)
+    resume_note, resume_target_id = resolve_resume_note(NOTE_DIR, resume_binding)
+    orphan_runtime_note = None
+    if resume_note is not None and resume_target_id and resume_target_id != runtime_session_id:
+        if existing_note is not None and existing_note.resolve() != resume_note.resolve():
+            # 续接会话若已误建独立断点，写入原断点后删除该误建文件。
+            orphan_runtime_note = existing_note
+        existing_note = resume_note
+        write_session_id = resume_target_id
+        ctx["resume_bound"] = True
+        ctx["runtime_session_id"] = runtime_session_id
+        try:
+            existing_resume_text = existing_note.read_text(encoding="utf-8")
+        except (FileNotFoundError, OSError):
+            existing_resume_text = ""
+        existing_continuations = parse_frontmatter_list(existing_resume_text, "continuation_session_ids")
+        merged = []
+        for value in list(existing_continuations) + [runtime_session_id]:
+            item = str(value or "").strip()
+            if item and item != write_session_id and item not in merged:
+                merged.append(item)
+        ctx["continuation_session_ids"] = merged
+        _debug_log(
+            "resume_binding_applied",
+            runtime_session=runtime_session_id,
+            write_session=write_session_id,
+            note_path=existing_note,
+            orphan_runtime_note=orphan_runtime_note,
+            source=(resume_binding or {}).get("source", ""),
+        )
+    if existing_note is not None:
+        try:
+            existing_identity_text = existing_note.read_text(encoding="utf-8")
+        except (FileNotFoundError, OSError):
+            existing_identity_text = ""
+        primary_session_id = _frontmatter_string(existing_identity_text, "session_id") or write_session_id
+        write_session_id = primary_session_id
+        existing_session_ids = parse_frontmatter_list(existing_identity_text, "session_ids")
+        existing_continuations = parse_frontmatter_list(existing_identity_text, "continuation_session_ids")
+        merged = []
+        for value in list(existing_session_ids) + list(existing_continuations) + list(ctx.get("continuation_session_ids") or []) + [runtime_session_id]:
+            item = str(value or "").strip()
+            if item and item != write_session_id and item not in merged:
+                merged.append(item)
+        if runtime_session_id != write_session_id:
+            ctx["resume_bound"] = True
+            ctx["runtime_session_id"] = runtime_session_id
+            ctx["continuation_session_ids"] = merged
+        elif merged:
+            ctx["continuation_session_ids"] = merged
     if (
         not force
         and not manual_checkpoint
@@ -2988,12 +3127,19 @@ def main():
         sys.exit(0)
 
     archive = _archive_metadata(existing_note) if existing_note else {}
-    if archive and len(ctx.get("user_prompts", [])) <= archive["prompt_count"]:
+    if (
+        archive
+        and not ctx.get("resume_bound")
+        and len(ctx.get("user_prompts", [])) <= archive["prompt_count"]
+    ):
         status = "archived"
         ctx["status"] = status
         ctx["knowledge_archived"] = True
         ctx["archived_prompt_count"] = archive["prompt_count"]
         ctx["archive_document"] = archive["document"]
+    elif ctx.get("resume_bound"):
+        # 续接会话的 prompt 计数不能与主会话归档阈值直接比较，避免误锁 archived。
+        ctx["knowledge_archived"] = False
     if existing_note:
         # 已有断点始终原地更新。标题只有在自动生成且明显需要修复时才变更，
         # H1 与 title_baseline 不同即视为用户在 Obsidian 中手动改名。
@@ -3016,7 +3162,7 @@ def main():
             and _is_usable_checkpoint_title(preferred_title)
             and not _checkpoint_titles_match(existing_title, preferred_title)
         ):
-            session_note_path = _rename_checkpoint_note(session_note_path, preferred_title, session_id)
+            session_note_path = _rename_checkpoint_note(session_note_path, preferred_title, write_session_id)
             ctx["topic"] = preferred_title
             ctx["title_baseline"] = preferred_title
             ctx["title_source"] = preferred_source
@@ -3027,6 +3173,14 @@ def main():
         existing_checkpoint_category = _frontmatter_string(existing_note_text, "checkpoint_category")
         if existing_checkpoint_category:
             ctx["checkpoint_category"] = existing_checkpoint_category
+        if ctx.get("resume_bound"):
+            # 续接会话 transcript 通常不含原项目归属，沿用主断点已有 projects。
+            existing_projects = parse_frontmatter_list(existing_note_text, "projects")
+            existing_external = parse_frontmatter_list(existing_note_text, "external_projects")
+            if existing_projects:
+                ctx["projects"] = set(existing_projects) | set(ctx.get("projects") or [])
+            if existing_external:
+                ctx["external_projects"] = set(existing_external) | set(ctx.get("external_projects") or [])
         # 常规刷新逐字段保留手工 metadata，只补齐尚未记录的字段。
         existing_category, existing_tags, existing_keywords, existing_aliases = _read_frontmatter_all(session_note_path)
         if not force and is_legacy_generated_path_metadata(
@@ -3037,7 +3191,7 @@ def main():
             existing_tags = metadata_values(existing_tags, filter_noise=True)
             existing_keywords = metadata_values(existing_keywords, filter_noise=True)
             existing_aliases = []
-        if force:
+        if force and not ctx.get("resume_bound"):
             ctx["category"] = synth["category"]
             ctx["tags"] = synth["tags"]
             ctx["keywords"] = build_checkpoint_keywords(synth["keywords"], synth["tags"])
@@ -3058,7 +3212,7 @@ def main():
         fname = sanitize_filename(ctx["topic"])
         candidate = UNCLASSIFIED_CHECKPOINT_DIR / f"{fname}.md"
         if candidate.exists():
-            candidate = UNCLASSIFIED_CHECKPOINT_DIR / f"{fname}-{session_id[:8]}.md"
+            candidate = UNCLASSIFIED_CHECKPOINT_DIR / f"{fname}-{write_session_id[:8]}.md"
         session_note_path = candidate
     if not ctx.get("keywords"):
         ctx["keywords"] = build_checkpoint_keywords(ctx.get("keywords"), ctx.get("tags"))
@@ -3071,11 +3225,31 @@ def main():
             ctx.get("aliases"),
         )
     related = find_related_notes(ctx["tags"], session_note_path)
-    note_content = generate_session_note(session_id, ctx, status, related)
+    note_content = generate_session_note(write_session_id, ctx, status, related)
     session_note_path.write_text(redact_sensitive_text(note_content), encoding="utf-8")
+    if orphan_runtime_note is not None:
+        try:
+            if orphan_runtime_note.resolve() != session_note_path.resolve() and orphan_runtime_note.is_file():
+                orphan_runtime_note.unlink()
+                _remove_legacy_index_entries(INDEX_DIR, runtime_session_id, set())
+                _debug_log(
+                    "orphan_runtime_note_removed",
+                    runtime_session=runtime_session_id,
+                    removed=orphan_runtime_note,
+                    kept=session_note_path,
+                )
+        except OSError as exc:
+            _debug_log(
+                "orphan_runtime_note_remove_failed",
+                runtime_session=runtime_session_id,
+                removed=orphan_runtime_note,
+                error=str(exc),
+            )
     _debug_log(
         "write_success",
         session=session_id,
+        write_session=write_session_id,
+        resume_bound=bool(ctx.get("resume_bound")),
         platform=platform,
         status=status,
         note_path=session_note_path,
@@ -3105,7 +3279,7 @@ def main():
         "[obsidian-hook] Session checkpoint location: "
         f"vault-relative={vault_relative_path}; folder={vault_relative_directory}"
     )
-    update_daily_index(INDEX_DIR, session_note_path, session_id, ctx, status)
+    update_daily_index(INDEX_DIR, session_note_path, write_session_id, ctx, status)
     background_scheduled = (
         hook_event_name == "Stop"
         and not manual_checkpoint

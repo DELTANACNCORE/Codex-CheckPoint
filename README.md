@@ -1,5 +1,5 @@
-# Codex CheckPoint V0.9.0
-*Codex 会话断点 V0.9.0*
+# Codex CheckPoint V0.9.1
+*Codex 会话断点 V0.9.1*
 
 为 Codex 与 Obsidian 提供会话断点、持续恢复、项目总结和知识检索。仓库只包含运行时 hook、skills、README、许可证和忽略规则，不包含安装、迁移、打包或解包脚本。
 
@@ -47,6 +47,16 @@ This project is based on [hjm4839-coder/checkpoint](https://github.com/hjm4839-c
   Verification freshness: when users ask to test, verify, check, diagnose, troubleshoot, or retest, recovery injection requires relevant commands to be re-run in the current environment; historical “verified” content is only a lead.
 - PreTool 提醒：写入项目文档前提示已有相关材料。\
   PreTool reminder: project-document writes are checked against existing material.
+
+## V0.9.1
+*Version 0.9.1*
+
+- 续接绑定：新对话带恢复意图或明确 `thread_id` / `session_id` 时，将当前运行会话绑定到历史断点；Stop 写入原笔记，不再为同主题另建断点。误建的续接独立断点会删除并清理索引。\
+  Resume binding: when a new conversation has recovery intent or an explicit `thread_id` / `session_id`, the runtime session is bound to the historical checkpoint. Stop updates that original note and does not create another note for the same topic. Miscreated continuation-only notes are removed and their index rows are cleaned.
+- 多 session 身份：断点 frontmatter 保留主 `session_id`，并写入 `session_ids` 与 `continuation_session_ids`；查找时任一命中即回到同一笔记。\
+  Multi-session identity: the primary `session_id` stays on the original note, while `session_ids` and `continuation_session_ids` record all related sessions. Lookup by any of them returns the same note.
+- 续接元数据保护：续接刷新保留原断点的 projects、tags、keywords 与 aliases；`force` 不会在续接场景下覆盖这些字段。\
+  Continuation metadata protection: resume refreshes preserve the original note's projects, tags, keywords, and aliases; `force` does not overwrite them during resume writes.
 
 ## V0.9.0
 *Version 0.9.0*
