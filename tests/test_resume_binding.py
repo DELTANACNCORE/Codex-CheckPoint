@@ -6,6 +6,8 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -206,6 +208,198 @@ title_source: "preserved"
             self.assertEqual(found_original.resolve(), note.resolve())
             siblings = list(notes.glob("*.md"))
             self.assertEqual(len(siblings), 1)
+
+    def test_resume_note_preserves_prior_conclusions_and_execution_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            vault = Path(temp) / "vault"
+            (vault / ".obsidian").mkdir(parents=True)
+            checkpoint = load_module(HOOK, vault, f"checkpoint_merge_{id(vault)}")
+            original = "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb"
+            runtime = "cccccccc-4444-5555-6666-dddddddddddd"
+            previous = """# 原断点
+
+## 可直接续接的结论
+
+- 旧结论：恢复绑定已写入原断点。
+
+## 已完成事项
+
+- 旧事项：主 session 身份已经保留。
+
+## 当前状态与续接
+
+- [ ] 等待续接会话验证旧结论和新改动。
+
+## 已验证结果
+
+- 旧验证：原断点可以通过主 session 查找。
+
+## 实际产出
+
+- /workspace/.codex/hooks/retrieve.py
+"""
+            ctx = {
+                "topic": "checkpoint 续接摘要保留",
+                "title_baseline": "checkpoint 续接摘要保留",
+                "title_source": "thread",
+                "checkpoint_category": "知识库与工作流",
+                "knowledge_archived": False,
+                "projects": set(),
+                "external_projects": set(),
+                "category": [],
+                "tags": ["checkpoint"],
+                "keywords": ["resume-binding"],
+                "aliases": ["checkpoint 续接摘要保留"],
+                "user_prompts": ["继续验证续接摘要保留"],
+                "assistant_updates": ["新结论：续接会话已保留旧结论和新的验证证据。"],
+                "latest_assistant_update": "新结论：续接会话已保留旧结论和新的验证证据。",
+                "written_files": set(),
+                "external_written_files": set(),
+                "all_writes": {"/workspace/.codex/hooks/checkpoint.py"},
+                "executed_commands": ["python3 -m unittest tests.test_resume_binding"],
+                "used_plan_mode": False,
+                "verbal_plan_snippets": [],
+                "resume_bound": True,
+                "runtime_session_id": runtime,
+                "continuation_session_ids": [runtime],
+                "prior_checkpoint_text": previous,
+            }
+
+            content = checkpoint.generate_session_note(original, ctx, "completed")
+
+            self.assertIn("旧结论：恢复绑定已写入原断点", content)
+            self.assertIn("新结论：续接会话已保留旧结论和新的验证证据", content)
+            self.assertIn("旧事项：主 session 身份已经保留", content)
+            self.assertIn("等待续接会话验证旧结论和新改动", content)
+            self.assertIn("旧验证：原断点可以通过主 session 查找", content)
+            self.assertIn("python3 -m unittest tests.test_resume_binding", content)
+            self.assertIn("/workspace/.codex/hooks/checkpoint.py", content)
+            self.assertIn("/workspace/.codex/hooks/retrieve.py", content)
+
+    def test_hook_process_merges_bound_note_in_place(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            vault = root / "vault"
+            home = root / "home"
+            notes = vault / "Codex工作记录" / "会话断点" / "知识库与工作流"
+            notes.mkdir(parents=True)
+            (vault / ".obsidian").mkdir()
+            original = "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb"
+            runtime = "cccccccc-4444-5555-6666-dddddddddddd"
+            note = notes / "原断点.md"
+            note.write_text(
+                f"""---
+session_id: "{original}"
+session_ids: ["{original}"]
+status: "completed"
+platform: "codex"
+projects: []
+external_projects: []
+category: []
+tags: ["checkpoint"]
+keywords: ["resume-binding"]
+aliases: ["原断点"]
+title_baseline: "原断点"
+title_source: "preserved"
+---
+
+# 原断点
+
+## 可直接续接的结论
+
+- 旧结论：保留主 session 的恢复入口。
+
+## 已完成事项
+
+- 已完成旧绑定配置。
+
+## 当前状态与续接
+
+- [ ] 等待续接会话执行验证。
+
+## 已验证结果
+
+- 旧验证结果仍可读取。
+
+## 实际产出
+
+- /workspace/.codex/hooks/retrieve.py
+""",
+                encoding="utf-8",
+            )
+            bind_dir = home / ".codex" / "cache" / "checkpoint-resume"
+            bind_dir.mkdir(parents=True)
+            (bind_dir / f"{runtime}.json").write_text(
+                json.dumps(
+                    {
+                        "runtime_session_id": runtime,
+                        "target_session_id": original,
+                        "note_path": str(note),
+                        "source": "用户指定的会话断点",
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            rollout = home / ".codex" / "sessions" / "2026" / "07" / "21" / f"rollout-2026-07-21T12-00-00-{runtime}.jsonl"
+            rollout.parent.mkdir(parents=True)
+            entries = []
+            for round_number in range(5):
+                entries.extend((
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": f"继续验证第 {round_number + 1} 项。"}],
+                        },
+                    },
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "新结论：原断点内容已在续接后保留。"}],
+                        },
+                    },
+                ))
+            entries.append(
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "function_call",
+                        "name": "exec_command",
+                        "arguments": json.dumps({"cmd": "python3 -m unittest tests.test_resume_binding"}),
+                    },
+                }
+            )
+            rollout.write_text("\n".join(json.dumps(entry, ensure_ascii=False) for entry in entries) + "\n", encoding="utf-8")
+            env = {**os.environ, "HOME": str(home), "CODEX_HOME": str(home / ".codex")}
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(HOOK),
+                    "--vault-root",
+                    str(vault),
+                    "--transcript",
+                    str(rollout),
+                    "--session-id",
+                    runtime,
+                ],
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            merged = note.read_text(encoding="utf-8")
+            self.assertIn("旧结论：保留主 session 的恢复入口", merged)
+            self.assertIn("新结论：原断点内容已在续接后保留", merged)
+            self.assertIn("旧验证结果仍可读取", merged)
+            self.assertIn("python3 -m unittest tests.test_resume_binding", merged)
+            self.assertEqual(len(list(notes.glob("*.md"))), 1)
 
 
 if __name__ == "__main__":

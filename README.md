@@ -1,9 +1,9 @@
-# Codex CheckPoint V0.9.1
-*Codex 会话断点 V0.9.1*
+# Codex CheckPoint V1.0.0
+*Codex 会话断点 V1.0.0*
 
-为 Codex 与 Obsidian 提供会话断点、持续恢复、项目总结和知识检索。仓库只包含运行时 hook、skills、README、许可证和忽略规则，不包含安装、迁移、打包或解包脚本。
+为 Codex 与 Obsidian 提供会话断点、持续恢复、项目总结和知识检索。仓库包含运行时 hook、skills、发布正文校验工具、README、许可证和忽略规则，不包含安装、迁移、打包或解包脚本。
 
-Session checkpoints, continuous recovery, project summaries, and knowledge retrieval for Codex and Obsidian. This repository contains only runtime hooks, skills, the README, license, and ignore rules. It does not include installation, migration, packing, or unpacking scripts.
+Session checkpoints, continuous recovery, project summaries, and knowledge retrieval for Codex and Obsidian. This repository contains runtime hooks, skills, a release-body validator, the README, license, and ignore rules. It does not include installation, migration, packing, or unpacking scripts.
 
 ## 上游与署名
 *Upstream and Attribution*
@@ -29,6 +29,8 @@ This project is based on [hjm4839-coder/checkpoint](https://github.com/hjm4839-c
   Continuous updates: a checkpoint is refreshed when a new user message arrives after the meaningful-round threshold.
 - 恢复注入：新任务可读取相关断点、项目总结和 AI开发参考的短摘要。AI开发参考要求直接项目名或别名命中，或至少两个独立特征词命中；Docker、运维等宽泛主题词不会单独触发，界面引用标注也不会参与匹配。复用时，Codex 会先向用户说明文档来源。\
   Recovery injection: new tasks can receive compact context from relevant checkpoints, project summaries, and AI development references. References require a direct project or alias match, or at least two independent identity terms; broad Docker or operations terms alone do not trigger reuse, and UI response annotations do not participate in matching. Codex announces the source before reuse.
+- 续接摘要累计：恢复绑定写回原断点时，旧的可续接结论、已完成事项、待办、验证结果和实际产出会与新会话去重合并。新会话中的关键验证命令和代码或配置路径进入独立执行证据章节，避免续接摘要覆盖已完成工作。\
+  Continuation summary accumulation: when a recovery binding writes back to the original checkpoint, prior conclusions, completed work, pending items, validation results, and outputs are deduplicated with the new session. Important validation commands and code or configuration paths from the continuation appear in a separate execution-evidence section so new summaries do not overwrite completed work.
 - 项目总结：独立项目固定写入 `项目总结/<项目名>.md`，同一会话涉及多个独立项目时合并为一篇并记录 `session_ids`。自动归属只接受仍存在、项目名一致且已记录当前 session 的单项目总结；历史写入、已删除文件和旧合并总结不会产生新项目关系。父项目目录需要用户明确确认归属关系。\
   Project summaries: independent projects use `项目总结/<项目名>.md`; multiple independent projects in one session are merged into one note with `session_ids`. Automatic ownership accepts only an existing single-project summary whose name and current session match; historical writes, deleted files, and older merged summaries cannot create project relationships. Parent-project directories require explicit user confirmation.
 - AI开发参考：每次 `synthesize` 都会归档项目总结，并按会话长度提示是否值得提炼 AI开发参考。只有用户明确授权或强制要求时才写入 `AI开发参考/<项目名>.md`；有效材料类别不足三类时必须再次询问。自动 hook 不会创建、覆盖或删除 AI开发参考。旧 `长期经验总结/` 目录只提供读取兼容。\
@@ -37,16 +39,28 @@ This project is based on [hjm4839-coder/checkpoint](https://github.com/hjm4839-c
   Sensitive-information redaction: generated checkpoints, daily indexes, project summaries, the homepage, and AI development references replace common Bearer tokens, API keys, access tokens, passwords, JWTs, `sk-` keys, cookies, and private keys. Ordinary project Markdown files are neither scanned nor rewritten.
 - 搜索与合成：保留本地 `search` 与 `synthesize` skills；合成必须指定项目或标签。聚类合成额外要求用户确认范围和目标项目名，未确认的聚类不能写入知识库。\
   Search and synthesis: local `search` and `synthesize` skills remain available. Synthesis requires an explicit project or tag. Cluster synthesis also requires a user-confirmed scope and target project name; an unconfirmed cluster cannot write to the vault.
-- 用户确认合并：`synthesize --merge-candidates` 只读取未归档断点并报告高置信候选。候选需要共同项目加具体特征，或至少三个非泛化特征；用户确认候选编号和目标项目后，才可归档到一个独立项目总结。用户也可直接指定 session ID 与目标项目。\
-  User-confirmed merge: `synthesize --merge-candidates` reads only unarchived checkpoints and reports high-confidence proposals. A proposal needs a shared project plus a concrete signal, or at least three non-generic signals; archival to one independent project summary requires a user-approved proposal ID and target project. Users can also directly specify session IDs and a target project.
-- 知识库维护：`synthesize --audit` 只读检查空 Markdown、frontmatter、重复 session、缺少 rollout、归档目标、wikilink、项目总结、验证时效、metadata 候选与知识整理建议。metadata 回填、双向链接和断裂链接修复都要求指定候选并获得用户确认；自动 hook 不运行这些维护操作。\
-  Vault maintenance: `synthesize --audit` read-checks empty Markdown, frontmatter, duplicate sessions, missing rollouts, archive targets, wikilinks, project summaries, verification freshness, metadata proposals, and knowledge-organization suggestions. Metadata backfill, reciprocal links, and broken-link repair all require a specified proposal and user confirmation; automatic hooks never run these maintenance actions.
+- 用户确认合并：`synthesize --merge-candidates` 只读取未归档断点并报告高置信候选。候选需要共同项目加具体特征，或至少三个非泛化特征；共同特征会附带 `tags`、`keywords`、aliases、标题或技术词的来源。用户确认候选编号和目标项目后，才可归档到一个独立项目总结。用户也可直接指定 session ID 与目标项目。\
+  User-confirmed merge: `synthesize --merge-candidates` reads only unarchived checkpoints and reports high-confidence proposals. A proposal needs a shared project plus a concrete signal, or at least three non-generic signals; shared evidence identifies whether it came from `tags`, `keywords`, aliases, titles, or technical terms. Archival to one independent project summary requires a user-approved proposal ID and target project. Users can also directly specify session IDs and a target project.
+- 知识库维护：`synthesize --audit` 只读检查空 Markdown、frontmatter、重复 session、缺少 rollout、归档目标、wikilink、项目总结、验证时效、metadata 候选、知识整理建议和高区分度材料簇。候选优先依据 `tags`、`keywords`，再使用 aliases、完整标题和技术词，并展示来源证据。metadata 回填、双向链接和断裂链接修复都要求指定候选并获得用户确认；自动 hook 不运行这些维护操作。\
+  Vault maintenance: `synthesize --audit` read-checks empty Markdown, frontmatter, duplicate sessions, missing rollouts, archive targets, wikilinks, project summaries, verification freshness, metadata proposals, knowledge-organization suggestions, and high-distinction material clusters. Candidates prioritize `tags` and `keywords`, then aliases, full titles, and technical terms with source evidence. Metadata backfill, reciprocal links, and broken-link repair all require a specified proposal and user confirmation; automatic hooks never run these maintenance actions.
 - 增量搜索索引：`search` 使用 vault 专属的 SQLite 缓存增量索引 Markdown，保持 aliases、keywords、tags、标题和正文的原有排序，并在索引不可用时回退直接扫描。显式 `--semantic` 使用固定版本的本地 `multilingual-e5-small`，按标题和段落分块召回；默认检索不会下载模型或改变现有排序。\
   Incremental search index: `search` uses a vault-specific SQLite cache to incrementally index Markdown while preserving aliases, keywords, tags, title, and body ranking; it falls back to direct scanning when the index is unavailable. Explicit `--semantic` uses a pinned local `multilingual-e5-small` model with title-aware paragraph chunks; default retrieval never downloads a model or changes the existing ordering.
 - 验证时效：用户提出测试、验证、检查、诊断、排查或复测时，恢复注入会要求重新执行当前环境中的相关命令，历史“已验证”内容仅作为线索。\
   Verification freshness: when users ask to test, verify, check, diagnose, troubleshoot, or retest, recovery injection requires relevant commands to be re-run in the current environment; historical “verified” content is only a lead.
 - PreTool 提醒：写入项目文档前提示已有相关材料。\
   PreTool reminder: project-document writes are checked against existing material.
+
+## V1.0.0
+*Version 1.0.0*
+
+- 高区分度候选证据：metadata 回填、跨文档链接、会话合并和审计诊断共用同一套信号提取。它优先使用 frontmatter 的 `tags`、`keywords`，再审慎补充 aliases、完整标题和英文技术词，并排除路径、代码块、session 标识与宽泛工作流词。\
+  High-distinction candidate evidence: metadata backfill, cross-document links, session merges, and audit diagnostics share one signal extractor. It prioritizes frontmatter `tags` and `keywords`, then carefully adds aliases, full titles, and English technical terms while excluding paths, code blocks, session identifiers, and broad workflow words.
+- 只读材料簇诊断：`synthesize --audit` 会列出至少三条未归档断点共有的高区分度信号及来源文件，供人工审阅是否需要整理。诊断不会选择会话、推断项目关系、添加链接、合并文档或写入归档。\
+  Read-only material-cluster diagnostics: `synthesize --audit` lists high-distinction signals shared by at least three unarchived checkpoints and their source notes for human review. Diagnostics do not select sessions, infer project relationships, add links, merge documents, or write archives.
+- 续接摘要完整性：恢复绑定在更新原断点时保留旧结论、完成事项、待办、验证结果和产出，并与新会话内容去重合并。新会话的关键验证命令和代码路径保存在 `关键执行证据`，以便下一次恢复能够读取可验证的工作记录。\
+  Continuation-summary integrity: recovery bindings preserve prior conclusions, completed work, pending items, validation results, and outputs while deduplicating new-session content. Important validation commands and code paths from the continuation are stored under `关键执行证据` so the next recovery receives verifiable work records.
+- 可验证发布正文：`tools/release_notes.py` 从 Obsidian 更新日志的 `### GitHub Release` 双语段生成 `Vx.y.z` Release 正文，并拒绝缺失中文或英文描述的条目。生成过程不创建远端 Release。\
+  Verifiable release body: `tools/release_notes.py` builds a `Vx.y.z` Release body from the bilingual `### GitHub Release` section in the Obsidian changelog and rejects entries missing Chinese or English text. The generator does not create a remote Release.
 
 ## V0.9.1
 *Version 0.9.1*
@@ -263,6 +277,21 @@ Enable the complete Codex and Obsidian knowledge workflow on this machine.
 9. 需要 AI开发参考时明确调用 `synthesize` 并授权写入；普通 checkpoint 不会生成该文件。\
    Explicitly invoke `synthesize` and authorize the write for an AI development reference; ordinary checkpoints never generate it.
 
+## 发布
+*Release*
+
+GitHub Release 正文从 Obsidian 的 `Codex协同Obsidian工作流skill更新日志.md` 当前版本章节读取。先在该版本中编写 `### GitHub Release`，每个条目使用一行中文和一行缩进英文描述，再生成正文并人工核对标签、提交和远端状态。\
+GitHub Release bodies are read from the current-version section of `Codex协同Obsidian工作流skill更新日志.md` in Obsidian. Add a `### GitHub Release` section with one Chinese line and one indented English line per item, then generate the body and review the tag, commit, and remote state.
+
+```bash
+python3 tools/release_notes.py \
+  --version <x.y.z> \
+  --changelog "$OBSIDIAN_VAULT/Codex协同Obsidian工作流skill更新日志.md"
+```
+
+该工具只输出经过双语校验的 Release 正文；创建 GitHub Release 仍需在提交、打标签、推送并回读远端标签后执行。\
+The tool only outputs a validated bilingual Release body. Creating a GitHub Release remains a separate action after committing, tagging, pushing, and reading back the remote tag.
+
 ## 目录结构
 *Repository Layout*
 
@@ -282,6 +311,8 @@ Enable the complete Codex and Obsidian knowledge workflow on this machine.
     ├── search/
     ├── synthesize/
     └── verify/
+tools/
+└── release_notes.py
 ```
 
 ```text

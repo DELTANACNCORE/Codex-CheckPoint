@@ -19,6 +19,7 @@ from maintenance import (
     apply_metadata_candidates,
     audit_vault,
     broken_link_repair_candidates,
+    high_distinction_signals,
     link_candidates,
     scan_vault,
 )
@@ -242,6 +243,55 @@ aliases: ["Netplan 部署"]
 
         pair = {"项目总结/路径噪声甲.md", "项目总结/路径噪声乙.md"}
         self.assertFalse(any({item["left"]["rel"].as_posix(), item["right"]["rel"].as_posix()} == pair for item in candidates))
+
+    def test_high_distinction_signals_prioritize_metadata_and_ignore_paths(self) -> None:
+        record = {
+            "title": "WireGuard 网卡迁移验证",
+            "tags": ["运维/网络", "WireGuard"],
+            "keywords": ["Netplan"],
+            "aliases": ["Ubuntu 隧道"],
+            "projects": ["网卡迁移"],
+            "text": """---
+tags: ["运维/网络", "WireGuard"]
+keywords: ["Netplan"]
+---
+
+# WireGuard 网卡迁移验证
+
+`/Users/deltanacncore/Documents/Codex/temporary-worktree` 不应作为信号。
+thread_id 019f47d9-3134-7811-871c-387e21d9c9a0 UTC 不应作为信号。
+WireGuard 与 Netplan 的网卡迁移验证已经完成。
+""",
+        }
+
+        signals = high_distinction_signals(record)
+        labels = [item["label"] for item in signals]
+
+        self.assertIn("WireGuard", labels)
+        self.assertIn("Netplan", labels)
+        self.assertLess(labels.index("WireGuard"), labels.index("Netplan"))
+        normalized = {value.casefold() for value in labels}
+        self.assertNotIn("deltanacncore", normalized)
+        self.assertNotIn("thread_id", normalized)
+        self.assertNotIn("utc", normalized)
+        self.assertFalse(any("019f47d9" in value for value in normalized))
+        self.assertTrue(any(item["label"] == "WireGuard" and "tags" in item["sources"] for item in signals))
+
+    def test_audit_lists_high_signal_cluster_without_writing(self) -> None:
+        first = self.write_checkpoint("Netplan 聚合甲", "11111111-aaaa-bbbb-cccc-111111111111")
+        second = self.write_checkpoint("Netplan 聚合乙", "22222222-aaaa-bbbb-cccc-222222222222")
+        third = self.write_checkpoint("Netplan 聚合丙", "33333333-aaaa-bbbb-cccc-333333333333")
+        before = [path.read_text(encoding="utf-8") for path in (first, second, third)]
+
+        report = audit_vault(self.vault, sessions_root=self.home / ".codex" / "sessions")
+
+        candidate = next(
+            item for item in report["diagnostic_candidates"]
+            if item["term"] == "Netplan"
+        )
+        self.assertEqual(len(candidate["records"]), 3)
+        self.assertIn("tags", candidate["sources"])
+        self.assertEqual(before, [path.read_text(encoding="utf-8") for path in (first, second, third)])
 
     def test_broken_link_repair_requires_unique_target_and_confirmation(self) -> None:
         _first, _left, right = self.create_fixture()

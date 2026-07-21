@@ -56,6 +56,8 @@ python3 ~/.codex/skills/checkpoint/checkpoint.py --vault-root "$OBSIDIAN_VAULT" 
   Automatic hooks create new checkpoints in `Codex工作记录/会话断点/未分类对话/`, preserve an existing note location on updates, and never classify or move history automatically.
 - 新断点会补全 `aliases` 与 `keywords` 以便精确检索；普通刷新保留已有人工 metadata，并过滤用户目录和 `worktrees` 等路径噪声。\
   New checkpoints enrich `aliases` and `keywords` for precise retrieval. Normal refreshes preserve existing manual metadata and filter user-directory and `worktrees` path noise.
+- 恢复绑定写回原断点时，会保留并去重旧的可续接结论、完成事项、待办、验证结果和实际产出。续接会话中识别到的关键验证命令、代码或配置路径会写入 `关键执行证据`，用于下一次恢复核对。\
+  When a recovery binding writes back to the original checkpoint, it preserves and deduplicates prior conclusions, completed work, pending items, validation results, and outputs. Important validation commands and code or configuration paths from the continuation are recorded under `关键执行证据` for the next recovery review.
 - 自动 Stop hook 成功写入会话断点后，会向用户提示最终 vault 相对文件路径和所在目录；未分类对话文件夹中的断点会额外提示调用 `$checkpoint` 进行归类。仅写入每日索引或跳过写入时不会提示。\
   After an automatic Stop hook successfully writes a session checkpoint, the user receives its final vault-relative file path and parent directory. A note in the unclassified directory also directs the user to `$checkpoint` for classification. Index-only and skipped writes produce no notice.
 - 默认调用会检查当前断点标题，优先使用可用的 Codex 会话标题；只有自动生成的回执、长问句或其他机械标题才会改名。`title_baseline` 用于识别用户在 Obsidian 中做过的改名，用户标题不会被自动覆盖。随后只扫描 `未分类对话` 与当前手动调用的会话；已分类历史不会被重扫，当前会话再次 `$checkpoint` 时才允许重新归类。\

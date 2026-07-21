@@ -388,6 +388,31 @@ def _extract_paths_from_exec_command(cmd_text: str) -> list:
     return paths
 
 
+def _normalized_exec_command(command: object) -> str:
+    """Extract a shell command from native or wrapped Codex tool input."""
+    if isinstance(command, dict):
+        command = command.get("cmd", "")
+    if not isinstance(command, str):
+        return ""
+    value = command.strip()
+    embedded = re.search(r'"cmd"\s*:\s*"((?:\\.|[^"\\])*)"', value)
+    if embedded:
+        try:
+            value = json.loads(f'"{embedded.group(1)}"')
+        except json.JSONDecodeError:
+            pass
+    return redact_sensitive_text(re.sub(r"\s+", " ", value)).strip()
+
+
+def _add_executed_command(result: dict, tool_input: object) -> None:
+    command = _normalized_exec_command(tool_input)
+    if not command or len(command) > 900:
+        return
+    commands = result.setdefault("executed_commands", [])
+    if command not in commands:
+        commands.append(command)
+
+
 def _extract_written_paths_from_output(output_text: str) -> list:
     if not isinstance(output_text, str) or not output_text.strip():
         return []
@@ -520,6 +545,7 @@ def extract_session_context(transcript_path: str) -> dict:
     result = {
         "topic": "", "category": [], "tags": [], "keywords": [],
         "user_prompts": [], "written_files": set(), "external_written_files": set(), "all_writes": set(),
+        "executed_commands": [],
         "projects": set(), "external_projects": set(), "last_was_conclusion": False,
         "has_substantive_work": False, "verbal_plan_detected": False,
         "verbal_plan_snippets": [], "used_plan_mode": False,
@@ -581,6 +607,8 @@ def extract_session_context(transcript_path: str) -> dict:
             if isinstance(tool_input, str):
                 for path in _extract_paths_from_apply_patch(tool_input):
                     _add_written_file(result, path, plans_dir, plans_dir_str, project_root)
+        if tool_name == "exec_command":
+            _add_executed_command(result, tool_input)
 
     try:
         with open(transcript_path, "r", encoding="utf-8") as f:
@@ -1431,6 +1459,143 @@ def _short_resume_text(text: str, limit: int = 1500) -> str:
     return cleaned[: limit - 1].rstrip() + "…"
 
 
+def _checkpoint_section(text: str, heading: str) -> str:
+    matched = re.search(
+        rf"^##\s+{re.escape(heading)}\s*$\n+([\s\S]*?)(?=\n---\s*$|\n##\s+|\Z)",
+        str(text or ""),
+        re.MULTILINE,
+    )
+    return matched.group(1).strip() if matched else ""
+
+
+def _is_resume_placeholder(value: str) -> bool:
+    normalized = re.sub(r"\s+", "", str(value or ""))
+    return not normalized or any(marker in normalized for marker in (
+        "尚未提取到可用于续接的助手结论",
+        "本次未写入方案文件",
+        "本次没有新增可链接的知识文档",
+        "（无）",
+        "(无)",
+    ))
+
+
+def _resume_units(value: str) -> list[str]:
+    units = []
+    for raw_unit in re.split(r"\n{2,}", str(value or "").strip()):
+        unit = raw_unit.strip().strip("-").strip()
+        if not unit or _is_resume_placeholder(unit):
+            continue
+        if unit.startswith("```") and unit.endswith("```"):
+            continue
+        units.append(unit)
+    return units
+
+
+def _resume_units_similar(left: str, right: str) -> bool:
+    left_key = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", left.lower())
+    right_key = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", right.lower())
+    if not left_key or not right_key:
+        return False
+    if left_key == right_key or (min(len(left_key), len(right_key)) >= 18 and (left_key in right_key or right_key in left_key)):
+        return True
+    left_terms = _recovery_terms(left)
+    right_terms = _recovery_terms(right)
+    return bool(
+        left_terms
+        and right_terms
+        and len(left_terms & right_terms) / max(len(left_terms | right_terms), 1) >= 0.82
+    )
+
+
+def _merge_resume_blocks(previous: str, current: str, *, limit: int = 2400, max_items: int = 8) -> str:
+    """Keep non-duplicated prior evidence while reserving room for new progress."""
+    selected = []
+    selected_length = 0
+
+    def append(units: list[str], ceiling: int) -> None:
+        nonlocal selected_length
+        for unit in units:
+            if len(selected) >= max_items or any(_resume_units_similar(unit, existing) for existing in selected):
+                continue
+            remaining = max(0, ceiling - selected_length)
+            if remaining < 40:
+                return
+            if len(unit) > remaining:
+                unit = unit[: remaining - 1].rstrip() + "…"
+            selected.append(unit)
+            selected_length += len(unit) + 2
+
+    previous_units = _resume_units(previous)
+    current_units = _resume_units(current)
+    if previous_units and current_units:
+        append(previous_units, max(240, int(limit * 0.62)))
+        append(current_units, limit)
+    else:
+        append(previous_units or current_units, limit)
+    return "\n\n".join(selected)
+
+
+def _pending_resume_block(previous_text: str) -> str:
+    previous = _checkpoint_section(previous_text, "当前状态与续接")
+    markers = ("待", "未", "下一", "继续", "需要", "阻塞", "风险", "等待", "todo", "[ ]")
+    lines = [
+        line.strip()
+        for line in previous.splitlines()
+        if line.strip() and any(marker in line.lower() for marker in markers)
+    ]
+    return "\n".join(lines)
+
+
+def _critical_commands(ctx: dict) -> list[str]:
+    pattern = re.compile(
+        r"\b(?:pytest|unittest|test|verify|check|diagnos|lint|ruff|mypy|eslint|prettier|"
+        r"npm|pnpm|yarn|cargo|go\s+test|mvn|gradle|git\s+(?:status|diff|show|log|commit|push|tag)|gh\s+release)\b",
+        re.IGNORECASE,
+    )
+    selected = []
+    for raw in ctx.get("executed_commands", []) or []:
+        command = _normalized_exec_command(raw)
+        if not command or not pattern.search(command):
+            continue
+        compact = command[:360].rstrip()
+        if compact not in selected:
+            selected.append(compact)
+        if len(selected) == 6:
+            break
+    return selected
+
+
+def _critical_written_paths(ctx: dict) -> list[str]:
+    knowledge_paths = set(_knowledge_write_paths(ctx))
+    selected = []
+    for raw_path in sorted(set(ctx.get("all_writes", [])) - knowledge_paths):
+        path = Path(raw_path)
+        if path.suffix.lower() not in {".py", ".js", ".ts", ".tsx", ".jsx", ".rs", ".go", ".java", ".kt", ".sh", ".toml", ".json", ".yaml", ".yml", ".md"}:
+            continue
+        display = str(path)
+        if display not in selected:
+            selected.append(display)
+        if len(selected) == 8:
+            break
+    return selected
+
+
+def _execution_evidence_block(ctx: dict, previous_text: str) -> str:
+    previous = "\n\n".join(
+        section
+        for heading in ("关键执行证据", "已验证结果", "已验证能力", "验证证据")
+        if (section := _checkpoint_section(previous_text, heading))
+    )
+    current = []
+    commands = _critical_commands(ctx)
+    if commands:
+        current.extend(f"- 已执行命令：`{command.replace('`', "'")}`" for command in commands)
+    paths = _critical_written_paths(ctx)
+    if paths:
+        current.extend(f"- 代码或配置路径：`{path.replace('`', "'")}`" for path in paths)
+    return _merge_resume_blocks(previous, "\n".join(current), limit=2200, max_items=10)
+
+
 def _assistant_resume_block(updates, user_prompts=None) -> str:
     """保留跨阶段的关键结论，让新会话可凭断点继续而非重读完整 transcript。"""
     candidates = _assistant_recovery_candidates(updates, user_prompts)
@@ -1638,6 +1803,20 @@ def generate_session_note(session_id: str, ctx: dict, status: str, related: list
         ctx.get("assistant_updates") or [ctx.get("latest_assistant_update", "")],
         ctx.get("user_prompts", []),
     )
+    prior_checkpoint_text = str(ctx.get("prior_checkpoint_text") or "") if ctx.get("resume_bound") else ""
+    if prior_checkpoint_text:
+        assistant_block = _merge_resume_blocks(
+            _checkpoint_section(prior_checkpoint_text, "可直接续接的结论"),
+            assistant_block,
+            limit=3000,
+            max_items=8,
+        ) or assistant_block
+        goals_block = _merge_resume_blocks(
+            _checkpoint_section(prior_checkpoint_text, "会话目标演进"),
+            goals_block,
+            limit=1800,
+            max_items=7,
+        ) or goals_block
     knowledge_writes = _knowledge_write_paths(ctx)
     if knowledge_writes:
         links = [_knowledge_link(path) for path in knowledge_writes]
@@ -1649,6 +1828,19 @@ def generate_session_note(session_id: str, ctx: dict, status: str, related: list
     else:
         yield_block = "（本次未写入方案文件）"
         completed_block = "- 本次没有新增可链接的知识文档，断点已更新为最新会话状态。"
+    if prior_checkpoint_text:
+        completed_block = _merge_resume_blocks(
+            _checkpoint_section(prior_checkpoint_text, "已完成事项"),
+            completed_block,
+            limit=1800,
+            max_items=8,
+        ) or completed_block
+        yield_block = _merge_resume_blocks(
+            _checkpoint_section(prior_checkpoint_text, "实际产出"),
+            yield_block,
+            limit=1800,
+            max_items=8,
+        ) or yield_block
     continuation_lines = [
         f"- 当前归档状态：{label}。",
         f"- 最近用户目标：{_short_resume_text((ctx.get('user_prompts') or ['（未提取到）'])[-1], 220)}",
@@ -1664,6 +1856,18 @@ def generate_session_note(session_id: str, ctx: dict, status: str, related: list
     else:
         continuation_lines.append("- 先依据本断点的主要结论和实际产出继续，避免重新加载完整 transcript。")
     continuation_block = "\n".join(continuation_lines)
+    if prior_checkpoint_text:
+        continuation_block = _merge_resume_blocks(
+            _pending_resume_block(prior_checkpoint_text),
+            continuation_block,
+            limit=1600,
+            max_items=7,
+        ) or continuation_block
+    execution_evidence = _execution_evidence_block(ctx, prior_checkpoint_text)
+    execution_evidence_section = (
+        "\n## 关键执行证据\n\n" + execution_evidence + "\n\n---\n"
+        if execution_evidence else ""
+    )
     evidence_block = ""
     if status == "incomplete_archive":
         lines = []
@@ -1725,6 +1929,8 @@ title_source: {json.dumps(title_source, ensure_ascii=False)}
 {goals_block}
 
 ---
+
+{execution_evidence_section}
 
 ## 实际产出
 
@@ -3073,6 +3279,7 @@ def main():
             existing_resume_text = existing_note.read_text(encoding="utf-8")
         except (FileNotFoundError, OSError):
             existing_resume_text = ""
+        ctx["prior_checkpoint_text"] = existing_resume_text
         existing_continuations = parse_frontmatter_list(existing_resume_text, "continuation_session_ids")
         merged = []
         for value in list(existing_continuations) + [runtime_session_id]:
@@ -3148,6 +3355,8 @@ def main():
             existing_note_text = session_note_path.read_text(encoding="utf-8")
         except (FileNotFoundError, OSError):
             existing_note_text = ""
+        if ctx.get("resume_bound"):
+            ctx["prior_checkpoint_text"] = existing_note_text
         existing_title = _extract_h1(existing_note_text, session_note_path.stem)
         synth = synthesize_topic_and_tags(ctx["user_prompts"], ctx["written_files"], ctx["projects"])
         preferred_title, preferred_source = _preferred_checkpoint_title(ctx, synth["topic"])

@@ -27,8 +27,10 @@ from maintenance import (
     format_audit_report,
     format_broken_link_repair_candidates,
     format_link_candidates,
+    high_distinction_signals,
     link_candidates,
     scan_vault,
+    signal_evidence_label,
 )
 from redaction import redact_sensitive_text
 
@@ -654,31 +656,38 @@ def is_specific_merge_identity(value: str) -> bool:
     )
 
 
-def merge_identity_signals(record: dict) -> dict[str, str]:
+def merge_identity_signals(record: dict) -> dict[str, dict]:
     """Return only concrete identity signals suitable for a user-reviewed merge proposal."""
-    signals: dict[str, str] = {}
+    signals: dict[str, dict] = {}
 
-    def add(prefix: str, value: str) -> None:
-        label = normalize_space(value)
+    def add(prefix: str, signal: dict) -> None:
+        label = normalize_space(signal.get("label", ""))
         key = merge_identity_key(label)
         if label and key and is_specific_merge_identity(label):
-            signals.setdefault(f"{prefix}:{key}", label)
+            item = signals.setdefault(f"{prefix}:{key}", {"label": label, "sources": []})
+            for source in signal.get("sources", []):
+                if source not in item["sources"]:
+                    item["sources"].append(source)
 
-    for project in record.get("projects", []):
-        add("project", project)
-    for value in record.get("aliases", []) + record.get("keywords", []):
-        add("identity", value)
-    add("identity", record.get("title", ""))
-
-    for value in [record.get("title", ""), *record.get("aliases", []), *record.get("keywords", [])]:
-        for token in project_identity_tokens(value) or extract_terms(value):
-            add("term", token)
+    for signal in high_distinction_signals(record):
+        sources = signal.get("sources", [])
+        if "projects" in sources:
+            add("project", signal)
+        if any(source in {"tags", "keywords", "aliases"} for source in sources):
+            add("identity", signal)
+        elif any(source in {"title", "technical"} for source in sources):
+            add("term", signal)
     return signals
 
 
-def merge_pair_evidence(left: dict, right: dict) -> dict | None:
-    left_signals = merge_identity_signals(left)
-    right_signals = merge_identity_signals(right)
+def merge_pair_evidence(
+    left: dict,
+    right: dict,
+    left_signals: dict[str, dict] | None = None,
+    right_signals: dict[str, dict] | None = None,
+) -> dict | None:
+    left_signals = left_signals if left_signals is not None else merge_identity_signals(left)
+    right_signals = right_signals if right_signals is not None else merge_identity_signals(right)
     shared_keys = set(left_signals).intersection(right_signals)
     shared_projects = sorted(key for key in shared_keys if key.startswith("project:"))
     shared_identities = sorted(key for key in shared_keys if not key.startswith("project:"))
@@ -687,10 +696,14 @@ def merge_pair_evidence(left: dict, right: dict) -> dict | None:
     # project association, require three specific signals to avoid topic-word merges.
     if not ((shared_projects and shared_identities) or len(shared_identities) >= 3):
         return None
-    labels = {key: left_signals[key] for key in shared_keys}
+    labels = {key: left_signals[key]["label"] for key in shared_keys}
     return {
         "projects": [labels[key] for key in shared_projects],
         "identities": [labels[key] for key in shared_identities],
+        "evidence": [
+            signal_evidence_label(left_signals[key])
+            for key in shared_identities
+        ],
     }
 
 
@@ -732,11 +745,20 @@ def eligible_merge_records(records: list[dict]) -> list[dict]:
 def build_merge_candidates(records: list[dict]) -> list[dict]:
     """Build conservative, read-only merge proposals from unarchived checkpoint notes."""
     eligible = sorted(eligible_merge_records(records), key=lambda record: (record["title"], record["session_id"]))
+    signal_cache = {id(record): merge_identity_signals(record) for record in eligible}
     candidates: dict[frozenset[str], dict] = {}
     for index, seed in enumerate(eligible):
         cluster = [seed]
         for other in eligible[index + 1 :]:
-            if all(merge_pair_evidence(member, other) is not None for member in cluster):
+            if all(
+                merge_pair_evidence(
+                    member,
+                    other,
+                    signal_cache[id(member)],
+                    signal_cache[id(other)],
+                ) is not None
+                for member in cluster
+            ):
                 cluster.append(other)
         if len(cluster) < 2:
             continue
@@ -744,7 +766,12 @@ def build_merge_candidates(records: list[dict]) -> list[dict]:
         evidence = []
         for left_index, left in enumerate(cluster):
             for right in cluster[left_index + 1 :]:
-                pair = merge_pair_evidence(left, right)
+                pair = merge_pair_evidence(
+                    left,
+                    right,
+                    signal_cache[id(left)],
+                    signal_cache[id(right)],
+                )
                 if pair:
                     evidence.append(pair)
         session_keys = frozenset(record["session_id"] for record in cluster)
@@ -756,6 +783,10 @@ def build_merge_candidates(records: list[dict]) -> list[dict]:
             "common_projects": common_projects,
             "identities": dedupe_texts(
                 [identity for pair in evidence for identity in pair["identities"]],
+                6,
+            ),
+            "evidence": dedupe_texts(
+                [item for pair in evidence for item in pair.get("evidence", [])],
                 6,
             ),
         }
@@ -788,6 +819,8 @@ def print_merge_candidates(candidates: list[dict], scanned_count: int, vault_roo
             print("共同项目: " + "、".join(candidate["common_projects"]))
         if candidate["identities"]:
             print("共同特征: " + "、".join(candidate["identities"]))
+        if candidate.get("evidence"):
+            print("匹配依据: " + "、".join(candidate["evidence"]))
         print("涉及会话:")
         for record in candidate["records"]:
             try:

@@ -27,6 +27,29 @@ GENERIC_IDENTITIES = {
     "image", "latest", "name", "text", "skills", "synthesize", "deltanacncore", "agent",
     "未关联项目", "无关联项目", "未分类对话",
 }
+HIGH_SIGNAL_STOP_WORDS = GENERIC_IDENTITIES | {
+    "这个", "那个", "这些", "当前", "已经", "可以", "需要", "通过", "用于", "相关",
+    "内容", "说明", "结果", "事项", "状态", "继续", "完成", "运行", "执行", "处理",
+    "版本", "功能", "信息", "数据", "文件", "目录", "标题", "会话", "知识", "文档",
+    "project", "document", "session", "result", "current", "using", "used", "with",
+    "from", "into", "that", "this", "then", "when", "where", "will", "have", "has",
+    "utc", "thread_id", "session_id", "transcript", "rollout", "runtime", "resume",
+    "skill", "skill.md", "readme", "markdown", "txt", "yaml", "yml", "json", "toml",
+    "server", "healthy", "latest", "bot", "mac", "linux", "mcp",
+    "command", "commands", "output", "input", "function", "message", "messages", "service",
+    "services", "hub", "registry", "tool", "tools", "model", "models", "file", "files",
+    "path", "paths", "png", "jpg", "jpeg", "gif", "pdf", "docx", "smb", "ipc",
+    "web", "bug", "running", "state", "status", "source", "request", "response",
+}
+HIGH_SIGNAL_SOURCE_ORDER = ("tags", "keywords", "aliases", "projects", "title", "technical")
+HIGH_SIGNAL_SOURCE_LABELS = {
+    "tags": "tags",
+    "keywords": "keywords",
+    "aliases": "aliases",
+    "projects": "projects",
+    "title": "标题",
+    "technical": "技术词",
+}
 LOW_SIGNAL_TITLE_PATTERNS = (
     r"^请只回复一句",
     r"\bverify\b",
@@ -175,6 +198,134 @@ def is_specific_identity(value: str) -> bool:
     return bool(tokens) and any(identity_key(token) not in GENERIC_IDENTITIES for token in tokens)
 
 
+def _signal_source_rank(source: str) -> int:
+    try:
+        return HIGH_SIGNAL_SOURCE_ORDER.index(source)
+    except ValueError:
+        return len(HIGH_SIGNAL_SOURCE_ORDER)
+
+
+def _is_high_signal_value(value: str) -> bool:
+    label = normalize_space(value)
+    key = identity_key(label)
+    compact = label.casefold()
+    if len(key) < 3 or key in HIGH_SIGNAL_STOP_WORDS or compact in HIGH_SIGNAL_STOP_WORDS:
+        return False
+    if any(marker in compact for marker in ("thread_id", "session_id", "transcript", "rollout")):
+        return False
+    if re.fullmatch(r"[0-9a-f]{3,}(?:-[0-9a-f]{2,})+", compact):
+        return False
+    if re.fullmatch(r"[0-9a-f]{7,}", compact) and any(char.isdigit() for char in compact):
+        return False
+    if re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", compact):
+        return False
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:[ t]\d{2}:\d{2}(?::\d{2})?)?(?:\s*utc[+-]?\d*)?", compact):
+        return False
+    tokens = extract_identity_tokens(label)
+    if not tokens:
+        return False
+    return any(identity_key(token) not in HIGH_SIGNAL_STOP_WORDS for token in tokens)
+
+
+def _body_without_frontmatter(text: str) -> str:
+    source = str(text or "")
+    frontmatter = frontmatter_block(source)
+    if frontmatter:
+        source = source[len(frontmatter) + 9 :]
+    source = re.sub(r"```[\s\S]*?```", " ", source)
+    source = re.sub(r"`[^`]+`", " ", source)
+    source = re.sub(r"https?://\S+", " ", source)
+    source = re.sub(r"(?:^|\s)[~/][^\s`]+", " ", source)
+    source = re.sub(
+        r"^\*\*(?:状态|最近归档|平台|会话 ID|续接会话|涉及项目|已记录用户消息)\*\*:\s*.*$",
+        " ",
+        source,
+        flags=re.MULTILINE,
+    )
+    source = re.sub(r"^>\s+.*$", " ", source, flags=re.MULTILINE)
+    source = re.sub(
+        r"^##\s+(?:可直接续接的结论|已完成事项|当前状态与续接|会话目标演进|实际产出|关键执行证据|相关会话|恢复)\s*$",
+        " ",
+        source,
+        flags=re.MULTILINE,
+    )
+    source = re.sub(r"^##\s+恢复\s*$[\s\S]*\Z", " ", source, flags=re.MULTILINE)
+    source = re.sub(
+        r"(?:最近归档|已记录用户消息|当前归档状态|本断点已绑定续接会话|本次未写入方案文件|本次没有新增可链接的知识文档)",
+        " ",
+        source,
+    )
+    return source
+
+
+def _technical_terms(text: str) -> list[str]:
+    terms = []
+    for matched in re.findall(r"[A-Za-z][A-Za-z0-9_.-]{2,}", text or ""):
+        value = normalize_space(matched)
+        if not _is_high_signal_value(value):
+            continue
+        if value.islower() and len(value) < 5:
+            continue
+        key = identity_key(value)
+        if key and all(identity_key(existing) != key for existing in terms):
+            terms.append(value)
+    return terms
+
+
+def high_distinction_signals(record: dict) -> list[dict]:
+    """Return transparent, high-distinction signals for read-only candidate ranking.
+
+    Frontmatter tags and keywords lead the order. User-authored aliases and explicit
+    project names remain useful evidence. A usable full title supplies the Chinese
+    phrase fallback, while body content contributes only technical terms after code
+    and paths are removed. Callers may display the source list before any confirmed
+    write.
+    """
+    collected: dict[str, dict] = {}
+
+    def add(value: str, source: str) -> None:
+        label = normalize_space(value)
+        if not _is_high_signal_value(label):
+            return
+        key = identity_key(label)
+        item = collected.get(key)
+        if item is None:
+            collected[key] = {"key": key, "label": label, "sources": [source], "order": len(collected)}
+            return
+        if source not in item["sources"]:
+            primary_rank = min(_signal_source_rank(item_source) for item_source in item["sources"])
+            if _signal_source_rank(source) < primary_rank:
+                item["label"] = label
+            item["sources"].append(source)
+
+    for source, values in (
+        ("tags", record.get("tags", [])),
+        ("keywords", record.get("keywords", [])),
+        ("aliases", record.get("aliases", [])),
+        ("projects", record.get("projects", [])),
+    ):
+        for value in values or []:
+            add(value, source)
+            if source == "tags" and "/" in str(value):
+                add(str(value).rsplit("/", 1)[-1], source)
+
+    title = str(record.get("title", ""))
+    body = _body_without_frontmatter(str(record.get("text", "")))
+    add(title, "title")
+    for value in _technical_terms("\n".join((title, body))):
+        add(value, "technical")
+
+    result = list(collected.values())
+    for item in result:
+        item["sources"].sort(key=_signal_source_rank)
+    return sorted(result, key=lambda item: (_signal_source_rank(item["sources"][0]), item["order"]))
+
+
+def signal_evidence_label(signal: dict) -> str:
+    sources = "、".join(HIGH_SIGNAL_SOURCE_LABELS.get(source, source) for source in signal.get("sources", []))
+    return f"{signal.get('label', '')}（{sources}）" if sources else str(signal.get("label", ""))
+
+
 def is_usable_title(title: str) -> bool:
     value = normalize_space(title)
     if len(value) < 5 or len(value) > 80:
@@ -193,13 +344,15 @@ def metadata_candidate(record: dict) -> dict | None:
     keywords = record["keywords"]
     suggested_aliases = [record["title"]] if not aliases and is_usable_title(record["title"]) else []
     suggested_keywords = []
+    evidence = []
     if not keywords:
-        technical_terms = re.findall(r"[A-Za-z][A-Za-z0-9_.-]{2,}", record["title"])
-        values = [*record["projects"], record["title"], *technical_terms]
-        for value in values:
-            if is_specific_identity(value):
-                suggested_keywords.append(normalize_space(value))
+        for signal in high_distinction_signals(record):
+            label = signal["label"]
+            if label not in suggested_keywords:
+                suggested_keywords.append(label)
+                evidence.append(signal)
         suggested_keywords = metadata_values(suggested_keywords, limit=6, filter_noise=True)
+        evidence = [signal for signal in evidence if signal["label"] in suggested_keywords]
     if not suggested_aliases and not suggested_keywords:
         return None
     return {
@@ -207,6 +360,7 @@ def metadata_candidate(record: dict) -> dict | None:
         "record": record,
         "aliases": suggested_aliases,
         "keywords": suggested_keywords,
+        "evidence": evidence,
     }
 
 
@@ -561,6 +715,54 @@ def knowledge_organization_candidates(records: list[dict]) -> list[dict]:
     return candidates
 
 
+def high_signal_diagnostics(records: list[dict], limit: int = 12) -> list[dict]:
+    """Surface read-only clusters without selecting, linking, or archiving material.
+
+    A cluster needs three unarchived checkpoint notes sharing a high-distinction
+    signal. It is a review lead only: project selection, merging, and link writes
+    remain separate user-confirmed actions.
+    """
+    groups: dict[str, dict] = {}
+    for record in records:
+        if not is_checkpoint_record(record) or is_knowledge_archived(record):
+            continue
+        if not record.get("session_id") or not is_usable_title(record.get("title", "")):
+            continue
+        for signal in high_distinction_signals(record):
+            sources = signal.get("sources", [])
+            if not any(source in {"tags", "keywords", "aliases", "projects"} for source in sources):
+                continue
+            bucket = groups.setdefault(signal["key"], {
+                "term": signal["label"],
+                "sources": set(),
+                "records": {},
+            })
+            bucket["sources"].update(sources)
+            bucket["records"][record["session_id"]] = record
+
+    diagnostics = []
+    for key, bucket in groups.items():
+        source_records = sorted(bucket["records"].values(), key=lambda item: item["rel"].as_posix())
+        if len(source_records) < 3:
+            continue
+        sources = sorted(bucket["sources"], key=_signal_source_rank)
+        source_score = sum(max(1, len(HIGH_SIGNAL_SOURCE_ORDER) - _signal_source_rank(source)) for source in sources)
+        diagnostics.append({
+            "kind": "高信号会话簇",
+            "term": bucket["term"],
+            "sources": sources,
+            "records": source_records,
+            "score": source_score,
+            "evidence": f"{bucket['term']}（" + "、".join(
+                HIGH_SIGNAL_SOURCE_LABELS.get(source, source) for source in sources
+            ) + "）",
+        })
+    return sorted(
+        diagnostics,
+        key=lambda item: (-len(item["records"]), -item["score"], item["term"].casefold()),
+    )[: max(limit, 0)]
+
+
 def audit_vault(vault_root: Path, stale_days: int = 30, sessions_root: Path | None = None) -> dict:
     records = scan_vault(vault_root)
     checkpoints = [record for record in records if is_checkpoint_record(record)]
@@ -605,41 +807,73 @@ def audit_vault(vault_root: Path, stale_days: int = 30, sessions_root: Path | No
         "stale_verification": stale_verification_issues(records, stale_days),
         "metadata_candidates": metadata_candidates(checkpoints),
         "knowledge_candidates": knowledge_organization_candidates(records),
+        "diagnostic_candidates": high_signal_diagnostics(records),
         "stale_days": stale_days,
     }
 
 
-def document_signals(record: dict) -> dict[str, str]:
-    signals: dict[str, str] = {}
+def document_signal_details(record: dict) -> dict[str, dict]:
+    """Build one evidence map shared by link and audit candidate generation."""
+    signals: dict[str, dict] = {}
 
-    def add(prefix: str, value: str) -> None:
-        label = normalize_space(value)
+    def add(prefix: str, signal: dict) -> None:
+        label = normalize_space(signal.get("label", ""))
         key = identity_key(label)
-        if label and key and is_specific_identity(label):
-            signals.setdefault(f"{prefix}:{key}", label)
+        if not label or not key or not _is_high_signal_value(label):
+            return
+        item = signals.setdefault(f"{prefix}:{key}", {"label": label, "sources": []})
+        for source in signal.get("sources", []):
+            if source not in item["sources"]:
+                item["sources"].append(source)
+        item["sources"].sort(key=_signal_source_rank)
 
-    for project in record["projects"]:
-        add("project", project)
-    for value in [*record["aliases"], *record["keywords"], *record["tags"], record["title"]]:
-        add("identity", value)
-    # Body-wide words frequently include local paths, generated receipts, and shared
-    # tooling names. Link candidates use only user-visible metadata and titles.
-    for value in [record["title"], *extract_identity_tokens(record["title"])]:
-        add("term", value)
+    for signal in high_distinction_signals(record):
+        sources = signal.get("sources", [])
+        if "projects" in sources:
+            add("project", signal)
+        if any(source in {"tags", "keywords", "aliases"} for source in sources):
+            add("identity", signal)
+        elif any(source in {"title", "technical"} for source in sources):
+            add("term", signal)
     return signals
 
 
-def link_pair_evidence(left: dict, right: dict) -> dict | None:
-    left_signals = document_signals(left)
-    right_signals = document_signals(right)
+def document_signals(record: dict) -> dict[str, str]:
+    """Compatibility view of high-distinction link signals."""
+    return {key: item["label"] for key, item in document_signal_details(record).items()}
+
+
+def link_pair_evidence(
+    left: dict,
+    right: dict,
+    left_details: dict[str, dict] | None = None,
+    right_details: dict[str, dict] | None = None,
+) -> dict | None:
+    left_details = left_details if left_details is not None else document_signal_details(left)
+    right_details = right_details if right_details is not None else document_signal_details(right)
+    left_signals = {key: item["label"] for key, item in left_details.items()}
+    right_signals = {key: item["label"] for key, item in right_details.items()}
     shared = set(left_signals).intersection(right_signals)
     projects = sorted(key for key in shared if key.startswith("project:"))
     identities = sorted(key for key in shared if not key.startswith("project:"))
-    if not ((projects and identities) or len(identities) >= 3):
+    metadata_identities = [
+        key for key in identities
+        if any(source in {"tags", "keywords", "aliases"} for source in left_details[key]["sources"])
+    ]
+    # A shared recorded project still needs a user-visible metadata signal. Without a
+    # project, require three signals with at least two metadata-backed identities.
+    if not ((projects and metadata_identities) or (len(identities) >= 3 and len(metadata_identities) >= 2)):
         return None
     return {
         "projects": [left_signals[key] for key in projects],
         "identities": [left_signals[key] for key in identities],
+        "evidence": [
+            signal_evidence_label({
+                "label": left_signals[key],
+                "sources": left_details[key]["sources"],
+            })
+            for key in identities
+        ],
     }
 
 
@@ -666,12 +900,13 @@ def link_candidates(records: list[dict]) -> list[dict]:
         and is_usable_title(record["title"])
     ]
     by_rel, by_stem = document_index(records)
+    signal_cache = {id(record): document_signal_details(record) for record in eligible}
     candidates = []
     for index, left in enumerate(eligible):
         for right in eligible[index + 1 :]:
             if documents_linked(left, right, by_rel, by_stem):
                 continue
-            evidence = link_pair_evidence(left, right)
+            evidence = link_pair_evidence(left, right, signal_cache[id(left)], signal_cache[id(right)])
             if not evidence:
                 continue
             candidates.append({
@@ -680,6 +915,7 @@ def link_candidates(records: list[dict]) -> list[dict]:
                 "right": right,
                 "projects": evidence["projects"],
                 "identities": metadata_values(evidence["identities"], limit=6),
+                "evidence": evidence["evidence"][:6],
             })
     return sorted(candidates, key=lambda item: (item["left"]["rel"].as_posix(), item["right"]["rel"].as_posix()))
 
@@ -748,6 +984,8 @@ def format_audit_report(report: dict, item_limit: int = 12) -> str:
         if candidate["keywords"]:
             proposed.append("keywords=" + json.dumps(candidate["keywords"], ensure_ascii=False))
         lines.append(f"- {candidate['session_id']} · `{record['rel'].as_posix()}` · {'；'.join(proposed)}")
+        if candidate.get("evidence"):
+            lines.append("  依据：" + "、".join(signal_evidence_label(signal) for signal in candidate["evidence"]))
     if len(candidates) > item_limit:
         lines.append(f"- 其余 {len(candidates) - item_limit} 条未展开。")
     knowledge_candidates = report["knowledge_candidates"]
@@ -765,7 +1003,18 @@ def format_audit_report(report: dict, item_limit: int = 12) -> str:
         )
     if len(knowledge_candidates) > item_limit:
         lines.append(f"- 其余 {len(knowledge_candidates) - item_limit} 项未展开。")
+    diagnostics = report.get("diagnostic_candidates", [])
+    lines.append(f"\n## 高区分度诊断建议：{len(diagnostics)} 项")
+    for candidate in diagnostics[:item_limit]:
+        sources = "、".join(f"`{source['rel'].as_posix()}`" for source in candidate["records"])
+        lines.append(
+            f"- {candidate['kind']}：{candidate['evidence']} 在 {len(candidate['records'])} 条未归档断点中出现"
+            f"（{sources}）。"
+        )
+    if len(diagnostics) > item_limit:
+        lines.append(f"- 其余 {len(diagnostics) - item_limit} 项未展开。")
     lines.append("知识整理建议不推断父项目关系，也不构成归档授权。")
+    lines.append("高区分度诊断只提供审阅线索，不会选择会话、添加链接、合并文档或写入归档。")
     lines.append("\n本次审计未修改 vault。metadata 回填必须指定 session ID 并附加 --confirm-metadata。")
     return "\n".join(lines)
 
@@ -782,6 +1031,7 @@ def format_link_candidates(candidates: list[dict], limit: int = 8) -> str:
             f"文档 B: `{right['rel'].as_posix()}` · {right['title']}",
             "共同项目: " + ("、".join(candidate["projects"]) if candidate["projects"] else "无"),
             "共同特征: " + "、".join(candidate["identities"]),
+            "匹配依据: " + "、".join(candidate.get("evidence", [])),
         ))
     if not candidates:
         lines.append("当前没有达到高置信阈值的候选。")

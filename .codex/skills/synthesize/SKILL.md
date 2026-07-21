@@ -71,9 +71,9 @@ python3 ~/.codex/skills/synthesize/synthesize.py --vault-root "$OBSIDIAN_VAULT" 
 ## 知识库审计
 *Vault Audit*
 
-`--audit` 只读检查空 Markdown、断点 frontmatter、重复 session、缺少 rollout、归档目标、项目总结、wikilink、验证时效、metadata 回填候选和知识整理建议。审计不会写入报告、项目总结、断点或索引。
+`--audit` 只读检查空 Markdown、断点 frontmatter、重复 session、缺少 rollout、归档目标、项目总结、wikilink、验证时效、metadata 回填候选、知识整理建议和高区分度材料簇。审计不会写入报告、项目总结、断点或索引。
 
-`--audit` read-checks empty Markdown, checkpoint frontmatter, duplicate sessions, missing rollouts, archive targets, project summaries, wikilinks, verification freshness, metadata-backfill proposals, and knowledge-organization suggestions. It never writes a report, project summary, checkpoint, or index.
+`--audit` read-checks empty Markdown, checkpoint frontmatter, duplicate sessions, missing rollouts, archive targets, project summaries, wikilinks, verification freshness, metadata-backfill proposals, knowledge-organization suggestions, and high-distinction material clusters. It never writes a report, project summary, checkpoint, or index.
 
 ```bash
 python3 ~/.codex/skills/synthesize/synthesize.py --vault-root "$OBSIDIAN_VAULT" --audit --stale-days 30
@@ -82,6 +82,10 @@ python3 ~/.codex/skills/synthesize/synthesize.py --vault-root "$OBSIDIAN_VAULT" 
 审计列出的 metadata 候选只能由用户逐条或按明确 session 范围确认。先展示候选、session ID 和拟写入字段，再获得明确同意；已有人工 `aliases` 或 `keywords` 保持原值。重复 session ID 必须先用断点清理处理。
 
 Metadata proposals from an audit require item-level or explicitly scoped session confirmation. Show the proposal, session ID, and fields first, then obtain explicit approval; existing manual `aliases` or `keywords` remain unchanged. Duplicate session IDs must be handled through checkpoint cleanup first.
+
+候选证据优先采用 frontmatter 的 `tags` 与 `keywords`，再采用 aliases、完整标题和英文技术词。代码块、URL、路径、session 标识和宽泛工作流词不会作为候选依据。高区分度材料簇需要至少三条未归档断点共有同一 metadata 信号，只提示人工审阅，不会选择会话、添加链接、合并文档或授权归档。
+
+Candidate evidence prioritizes frontmatter `tags` and `keywords`, then aliases, full titles, and English technical terms. Code blocks, URLs, paths, session identifiers, and broad workflow words do not support candidates. A high-distinction material cluster requires one shared metadata signal across at least three unarchived checkpoints; it only prompts review and never selects sessions, adds links, merges documents, or authorizes archival.
 
 知识整理建议只依据断点中已写入的明确项目字段，提示尚未归档会话或可能需要刷新项目总结的材料。建议不会推断父项目，不会选择会话，也不会构成归档授权；实际归档仍需用户明确指定项目或确认合并候选。
 
