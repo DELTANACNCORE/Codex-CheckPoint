@@ -95,6 +95,18 @@ tags: ["运维/网络"]
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertIn("网络项目总结", result.stdout)
 
+    def test_semantic_status_is_read_only_and_does_not_require_keywords(self) -> None:
+        self.write_note("Netplan 配置已经验证。")
+        before = self.note.read_text(encoding="utf-8")
+
+        result = self.run_search("--semantic-status")
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("语义检索状态", result.stdout)
+        self.assertIn("向量缓存", result.stdout)
+        self.assertEqual(self.note.read_text(encoding="utf-8"), before)
+        self.assertFalse((self.home / ".codex" / "cache").exists())
+
     def test_semantic_cache_reuses_local_vectors(self) -> None:
         self.write_note("Netplan 配置已经验证。")
         spec = spec_from_file_location("cxcp_search_test_module", SEARCH)

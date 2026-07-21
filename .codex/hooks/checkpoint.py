@@ -1481,13 +1481,31 @@ def _is_resume_placeholder(value: str) -> bool:
 
 def _resume_units(value: str) -> list[str]:
     units = []
-    for raw_unit in re.split(r"\n{2,}", str(value or "").strip()):
-        unit = raw_unit.strip().strip("-").strip()
+
+    def add(unit: str) -> None:
+        unit = unit.strip()
         if not unit or _is_resume_placeholder(unit):
-            continue
+            return
         if unit.startswith("```") and unit.endswith("```"):
-            continue
+            return
         units.append(unit)
+
+    for raw_block in re.split(r"\n{2,}", str(value or "").strip()):
+        lines = [line.rstrip() for line in raw_block.splitlines() if line.strip()]
+        if not lines:
+            continue
+        current = []
+        for line in lines:
+            if re.match(r"^\s*(?:[-*]|\d+\.)\s+", line):
+                if current:
+                    add("\n".join(current))
+                current = [line.strip()]
+            elif current:
+                current.append(line)
+            else:
+                current = [line.strip()]
+        if current:
+            add("\n".join(current))
     return units
 
 
@@ -1508,14 +1526,14 @@ def _resume_units_similar(left: str, right: str) -> bool:
 
 
 def _merge_resume_blocks(previous: str, current: str, *, limit: int = 2400, max_items: int = 8) -> str:
-    """Keep non-duplicated prior evidence while reserving room for new progress."""
+    """Place the latest progress first while retaining concise prior evidence."""
     selected = []
     selected_length = 0
 
-    def append(units: list[str], ceiling: int) -> None:
+    def append(units: list[str], ceiling: int, item_limit: int) -> None:
         nonlocal selected_length
         for unit in units:
-            if len(selected) >= max_items or any(_resume_units_similar(unit, existing) for existing in selected):
+            if len(selected) >= item_limit or any(_resume_units_similar(unit, existing) for existing in selected):
                 continue
             remaining = max(0, ceiling - selected_length)
             if remaining < 40:
@@ -1528,22 +1546,60 @@ def _merge_resume_blocks(previous: str, current: str, *, limit: int = 2400, max_
     previous_units = _resume_units(previous)
     current_units = _resume_units(current)
     if previous_units and current_units:
-        append(previous_units, max(240, int(limit * 0.62)))
-        append(current_units, limit)
+        # A recovery brief is truncated from the beginning, so current progress must
+        # receive the first portion and leave a bounded share for durable history.
+        reserve_history = min(2, max_items - 1)
+        append(current_units, max(240, int(limit * 0.65)), max_items - reserve_history)
+        append(previous_units, limit, max_items)
     else:
-        append(previous_units or current_units, limit)
+        append(current_units or previous_units, limit, max_items)
     return "\n\n".join(selected)
 
 
-def _pending_resume_block(previous_text: str) -> str:
+def _is_generated_continuation_line(line: str) -> bool:
+    normalized = re.sub(r"^[-*]\s*", "", str(line or "").strip())
+    return normalized.startswith((
+        "当前归档状态：",
+        "最近用户目标：",
+        "本断点已绑定续接会话，",
+        "优先读取涉及项目的单文件项目总结，",
+        "先依据本断点的主要结论和实际产出继续，",
+    ))
+
+
+def _pending_resume_lines(previous_text: str) -> list[str]:
     previous = _checkpoint_section(previous_text, "当前状态与续接")
-    markers = ("待", "未", "下一", "继续", "需要", "阻塞", "风险", "等待", "todo", "[ ]")
-    lines = [
-        line.strip()
-        for line in previous.splitlines()
-        if line.strip() and any(marker in line.lower() for marker in markers)
-    ]
-    return "\n".join(lines)
+    markers = ("待", "下一", "需要", "阻塞", "风险", "等待", "todo", "[ ]", "未完成")
+    selected = []
+    for raw_line in previous.splitlines():
+        line = raw_line.strip()
+        if (
+            not line
+            or _is_resume_placeholder(line)
+            or _is_generated_continuation_line(line)
+            or not any(marker in line.lower() for marker in markers)
+        ):
+            continue
+        if not any(_resume_units_similar(line, existing) for existing in selected):
+            selected.append(line)
+    return selected
+
+
+def _merge_continuation_lines(current: list[str], pending: list[str], *, limit: int = 1600, max_items: int = 7) -> str:
+    selected = []
+    selected_length = 0
+    for line in [*current, *pending]:
+        value = str(line or "").strip()
+        if not value or any(_resume_units_similar(value, existing) for existing in selected):
+            continue
+        remaining = limit - selected_length
+        if remaining < 40 or len(selected) >= max_items:
+            break
+        if len(value) > remaining:
+            value = value[: remaining - 1].rstrip() + "…"
+        selected.append(value)
+        selected_length += len(value) + 1
+    return "\n".join(selected)
 
 
 def _critical_commands(ctx: dict) -> list[str]:
@@ -1605,11 +1661,26 @@ def _assistant_resume_block(updates, user_prompts=None) -> str:
     def terms(text: str) -> set[str]:
         return set(re.findall(r"[A-Za-z][A-Za-z0-9_-]*|[\u4e00-\u9fff]{2,}", text.lower()))
 
-    ranked = sorted(candidates, reverse=True)
-    score_floor = ranked[0][0] - 22
-    eligible = [candidate for candidate in candidates if candidate[0] >= score_floor]
     selected = []
     selected_terms = []
+    latest_prompt_terms = _recovery_terms((user_prompts or [])[-1]) if user_prompts else set()
+
+    def is_substantive_result(text: str) -> bool:
+        lead = re.sub(r"^[\s>*#-]+", "", text).strip()
+        return bool(re.match(
+            r"^(?:v?\d+(?:\.\d+)+|可以|能够|能|已(?:经)?|当前|结论|问题|原因|限制|无法|没有|需要|应当|建议|修复|发布|通过|失败|存在|yes|no|can|cannot|completed|current|result|issue|cause|fixed|released|passed|failed|need)",
+            lead,
+            re.IGNORECASE,
+        ))
+
+    def selection_priority(candidate) -> tuple[int, int, int, int]:
+        score, index, text = candidate
+        return score, int(is_substantive_result(text)), min(len(text), 900), index
+
+    def primary_priority(candidate) -> tuple[int, int, int, int, int]:
+        score, index, text = candidate
+        latest_overlap = len(_recovery_terms(text) & latest_prompt_terms)
+        return int(is_substantive_result(text)), latest_overlap, score, min(len(text), 900), index
 
     def add_candidate(candidate) -> None:
         candidate_terms = terms(candidate[2])
@@ -1623,28 +1694,29 @@ def _assistant_resume_block(updates, user_prompts=None) -> str:
         selected.append(candidate)
         selected_terms.append(candidate_terms)
 
-    # 先从早、中、晚三个阶段各取一条强结论，避免末尾追问淹没已完成的主线。
-    last_index = max(candidate[1] for candidate in candidates)
-    phase_limits = (
-        (0, max(0, round(last_index * 0.34))),
-        (max(0, round(last_index * 0.34)) + 1, max(0, round(last_index * 0.68))),
-        (max(0, round(last_index * 0.68)) + 1, last_index),
-    )
-    for start, end in phase_limits:
-        scoped = [candidate for candidate in eligible if start <= candidate[1] <= end]
-        if scoped:
-            add_candidate(max(scoped, key=lambda item: (item[0], item[1])))
-        if len(selected) == 3:
-            break
+    ranked = sorted(candidates, reverse=True)
+    score_floor = ranked[0][0] - 22
+    eligible = [
+        candidate
+        for candidate in candidates
+        if candidate[0] >= score_floor
+        or (
+            is_substantive_result(candidate[2])
+            and bool(_recovery_terms(candidate[2]) & latest_prompt_terms)
+        )
+    ]
 
-    # 会话很短、某一阶段没有有效结论时，以全局得分补齐。
-    for candidate in ranked:
-        if candidate[0] < score_floor:
-            continue
-        add_candidate(candidate)
+    # The answer most relevant to the newest user goal leads the brief. Later
+    # progress messages remain supporting context instead of replacing it.
+    add_candidate(max(eligible or candidates, key=primary_priority))
+    for candidate in sorted(eligible, key=lambda item: item[1], reverse=True):
         if len(selected) == 3:
             break
-    selected.sort(key=lambda item: item[1])
+        add_candidate(candidate)
+    for candidate in sorted(eligible, key=selection_priority, reverse=True):
+        if len(selected) == 3:
+            break
+        add_candidate(candidate)
     return "\n\n".join(_short_resume_text(item[2], 650) for item in selected)
 
 
@@ -1857,9 +1929,9 @@ def generate_session_note(session_id: str, ctx: dict, status: str, related: list
         continuation_lines.append("- 先依据本断点的主要结论和实际产出继续，避免重新加载完整 transcript。")
     continuation_block = "\n".join(continuation_lines)
     if prior_checkpoint_text:
-        continuation_block = _merge_resume_blocks(
-            _pending_resume_block(prior_checkpoint_text),
-            continuation_block,
+        continuation_block = _merge_continuation_lines(
+            continuation_lines,
+            _pending_resume_lines(prior_checkpoint_text),
             limit=1600,
             max_items=7,
         ) or continuation_block

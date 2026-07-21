@@ -1,8 +1,8 @@
 ---
 name: search
 description: |
-  Search the vault for project documents and Codex session checkpoints.
   按关键词搜索 vault 中的项目文档和 Codex 会话断点。
+  Search the vault for project documents and Codex session checkpoints.
 ---
 
 # Search Skill
@@ -44,7 +44,12 @@ Search maintains a SQLite incremental index dedicated to the current vault under
 ```bash
 python3 ~/.codex/skills/search/search.py --vault-root "$OBSIDIAN_VAULT" --index-status
 python3 ~/.codex/skills/search/search.py --vault-root "$OBSIDIAN_VAULT" --rebuild-index
+python3 ~/.codex/skills/search/search.py --vault-root "$OBSIDIAN_VAULT" --semantic-status
 ```
+
+`--semantic-status` 只检查本机语义模型和当前 vault 的向量缓存状态，不下载模型、不计算向量，也不改写 Obsidian Markdown。
+
+`--semantic-status` checks the local semantic model and vector-cache status only. It does not download models, compute vectors, or rewrite Obsidian Markdown.
 
 ## 可选语义检索
 *Optional Semantic Retrieval*

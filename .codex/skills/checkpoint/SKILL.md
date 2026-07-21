@@ -1,16 +1,16 @@
 ---
 name: checkpoint
 description: |
-  Save the current Codex session as an Obsidian recovery brief.
   将当前 Codex 会话保存为 Obsidian 恢复断点。
+  Save the current Codex session as an Obsidian recovery brief.
 ---
 
 # Checkpoint Skill
 *会话断点 Skill*
 
-将当前 Codex rollout 写入 Obsidian 恢复断点，保留整段会话中的主要结论、已完成工作、当前状态、续接入口、目标演进和真实知识产出，便于后续任务不读取完整 transcript 即可继续。默认调用会优先保留可用的 Codex 会话标题和用户在 Obsidian 中改过的标题，只修复自动生成的机械标题，再读取全部已保存断点并统一归类。
+将当前 Codex rollout 写入 Obsidian 恢复断点，保留整段会话中的主要结论、已完成工作、当前状态、续接入口、目标演进和真实知识产出，便于后续任务不读取完整 transcript 即可继续。恢复绑定时，最新结论、当前目标和真实待办优先显示，历史结论保留有限份额并去重。默认调用会优先保留可用的 Codex 会话标题和用户在 Obsidian 中改过的标题，只修复自动生成的机械标题，再读取全部已保存断点并统一归类。
 
-Write the current Codex rollout as an Obsidian recovery brief. The note retains cross-stage conclusions, completed work, current state, continuation entry points, goal evolution, and real knowledge outputs so a later task can continue without loading the full transcript. A usable Codex thread title and titles changed in Obsidian are preserved; only mechanical automatic titles are repaired.
+Write the current Codex rollout as an Obsidian recovery brief. The note retains cross-stage conclusions, completed work, current state, continuation entry points, goal evolution, and real knowledge outputs so a later task can continue without loading the full transcript. Recovery bindings place current conclusions, goals, and real pending work first while retaining deduplicated historical evidence. A usable Codex thread title and titles changed in Obsidian are preserved; only mechanical automatic titles are repaired.
 
 ## 建议请求
 *Suggested Prompts*

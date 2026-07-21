@@ -1,8 +1,8 @@
 ---
 name: verify
 description: |
-  Re-run tests, checks, and diagnostics against the current environment before accepting historical knowledge conclusions.
   在当前环境重新执行测试、检查与诊断，再判断历史知识结论是否仍然有效。
+  Re-run tests, checks, and diagnostics against the current environment before accepting historical knowledge conclusions.
 ---
 
 # Verify Skill
@@ -22,6 +22,19 @@ Confirm the current working directory, service state, configuration version, and
 实际执行测试、健康检查、构建、状态查询或诊断命令。结果与历史结论不一致时，以当前命令输出为准，并说明差异。
 
 Run the actual test, health check, build, status query, or diagnostic command. When results differ from the historical conclusion, use the current command output as the source of truth and state the difference.
+
+## 命令入口
+*Command Runner*
+
+需要统一记录当前验证证据时，可使用 `verify.py` 执行用户明确指定的命令。脚本只运行传入的 `--command`，输出会脱敏；`--dry-run` 仅展示将执行的命令。它不会根据历史断点自行选择命令，也不会写入 Vault。
+
+Use `verify.py` to record current verification evidence for commands explicitly supplied by the user. It runs only the provided `--command` values and redacts output; `--dry-run` shows commands without running them. It does not select commands from history or write to the vault.
+
+```bash
+python3 ~/.codex/skills/verify/verify.py \
+  --cwd <项目目录> \
+  --command "python3 -m unittest discover -s tests -v"
+```
 
 缺少可执行条件、访问权限或安全确认时，明确说明验证未完成的原因，不把历史“已验证”标记视为当前通过。
 

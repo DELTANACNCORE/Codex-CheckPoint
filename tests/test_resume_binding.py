@@ -275,6 +275,108 @@ title_source: "preserved"
             self.assertIn("python3 -m unittest tests.test_resume_binding", content)
             self.assertIn("/workspace/.codex/hooks/checkpoint.py", content)
             self.assertIn("/workspace/.codex/hooks/retrieve.py", content)
+            self.assertLess(
+                content.index("新结论：续接会话已保留旧结论和新的验证证据"),
+                content.index("旧结论：恢复绑定已写入原断点"),
+            )
+
+    def test_resume_note_prioritizes_latest_summary_and_deduplicates_continuation_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            vault = Path(temp) / "vault"
+            (vault / ".obsidian").mkdir(parents=True)
+            checkpoint = load_module(HOOK, vault, f"checkpoint_freshness_{id(vault)}")
+            original = "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb"
+            runtime = "cccccccc-4444-5555-6666-dddddddddddd"
+            previous = """# 原断点
+
+## 可直接续接的结论
+
+- V0.9.1 发布仍待完成。
+
+- 旧结论一。
+
+- 旧结论二。
+
+- 旧结论三。
+
+- 旧结论四。
+
+- 旧结论五。
+
+- 旧结论六。
+
+## 当前状态与续接
+
+- 当前归档状态：会话中断。
+- 最近用户目标：发布 V0.9.1。
+- 本断点已绑定续接会话，自动 checkpoint 继续更新本文件，不另建同主题新断点。
+- 优先读取涉及项目的单文件项目总结，再根据实际产出和下方结论继续。
+- [ ] 等待当前环境重新验证。
+- [ ] 等待当前环境重新验证。
+"""
+            ctx = {
+                "topic": "checkpoint 续接摘要保鲜",
+                "title_baseline": "checkpoint 续接摘要保鲜",
+                "title_source": "thread",
+                "checkpoint_category": "知识库与工作流",
+                "knowledge_archived": False,
+                "projects": {"checkpoint迁到Codex"},
+                "external_projects": set(),
+                "category": [],
+                "tags": ["checkpoint"],
+                "keywords": ["resume-binding"],
+                "aliases": ["checkpoint 续接摘要保鲜"],
+                "user_prompts": ["继续修复续接摘要的重复和过期内容"],
+                "assistant_updates": ["V1.0.1 已完成续接摘要保鲜，最新结果优先展示。"],
+                "latest_assistant_update": "V1.0.1 已完成续接摘要保鲜，最新结果优先展示。",
+                "written_files": set(),
+                "external_written_files": set(),
+                "all_writes": set(),
+                "executed_commands": [],
+                "used_plan_mode": False,
+                "verbal_plan_snippets": [],
+                "resume_bound": True,
+                "runtime_session_id": runtime,
+                "continuation_session_ids": [runtime],
+                "prior_checkpoint_text": previous,
+            }
+
+            first = checkpoint.generate_session_note(original, ctx, "completed")
+            ctx["prior_checkpoint_text"] = first
+            second = checkpoint.generate_session_note(original, ctx, "completed")
+
+            self.assertLess(
+                first.index("V1.0.1 已完成续接摘要保鲜"),
+                first.index("V0.9.1 发布仍待完成"),
+            )
+            self.assertNotIn("最近用户目标：发布 V0.9.1", first)
+            self.assertEqual(first.count("本断点已绑定续接会话"), 1)
+            self.assertEqual(first.count("优先读取涉及项目的单文件项目总结"), 1)
+            self.assertEqual(first.count("[ ] 等待当前环境重新验证"), 1)
+            self.assertEqual(second.count("V1.0.1 已完成续接摘要保鲜"), 1)
+            self.assertEqual(second.count("本断点已绑定续接会话"), 1)
+            self.assertEqual(second.count("[ ] 等待当前环境重新验证"), 1)
+
+    def test_resume_summary_leads_with_latest_substantive_result(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            vault = Path(temp) / "vault"
+            (vault / ".obsidian").mkdir(parents=True)
+            checkpoint = load_module(HOOK, vault, f"checkpoint_latest_{id(vault)}")
+            updates = [
+                "已完成 V0.9.1 的旧续接摘要发布计划，仍需保留旧计划的历史记录。",
+                "V1.0.1 已完成续接摘要修复并通过完整回归，当前结果应排在恢复摘要前部。",
+                "版本说明已更新，正在同步运行时文件。",
+            ]
+
+            summary = checkpoint._assistant_resume_block(
+                updates,
+                ["V0.9.1 与 V1.0.1 的续接摘要修复现在可用吗？"],
+            )
+
+            self.assertLess(
+                summary.index("V1.0.1 已完成续接摘要修复"),
+                summary.index("V0.9.1 的旧续接摘要发布计划"),
+            )
 
     def test_hook_process_merges_bound_note_in_place(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

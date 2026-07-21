@@ -1,5 +1,5 @@
-# Codex CheckPoint V1.0.0
-*Codex 会话断点 V1.0.0*
+# Codex CheckPoint V1.0.1
+*Codex 会话断点 V1.0.1*
 
 为 Codex 与 Obsidian 提供会话断点、持续恢复、项目总结和知识检索。仓库包含运行时 hook、skills、发布正文校验工具、README、许可证和忽略规则，不包含安装、迁移、打包或解包脚本。
 
@@ -49,6 +49,31 @@ This project is based on [hjm4839-coder/checkpoint](https://github.com/hjm4839-c
   Verification freshness: when users ask to test, verify, check, diagnose, troubleshoot, or retest, recovery injection requires relevant commands to be re-run in the current environment; historical “verified” content is only a lead.
 - PreTool 提醒：写入项目文档前提示已有相关材料。\
   PreTool reminder: project-document writes are checked against existing material.
+
+## 内置 Skill
+*Built-in Skills*
+
+本项目包含四个内置 Skill，前台描述均以中文开头。\
+This project contains four built-in Skills, each with a Chinese-first description.
+
+| Skill | 中文功能 | English function |
+| --- | --- | --- |
+| `checkpoint` | 将当前 Codex 会话写为可恢复断点，续接时优先展示最新状态并保留去重后的历史结论。 | Saves a recoverable session checkpoint with fresh-first continuation context. |
+| `search` | 检索 Vault 中的项目总结、AI开发参考和会话断点，支持本地索引与可选离线语义检索。 | Searches project notes, AI references, and checkpoints with local indexing and optional offline semantic recall. |
+| `synthesize` | 在用户确认范围后聚合相关断点、生成项目总结，并提供审计、合并、清理与链接候选。 | Synthesizes confirmed checkpoint sets and provides audit, merge, cleanup, and link proposals. |
+| `verify` | 在当前环境执行用户明确指定的验证命令，脱敏展示结果，不把历史结论当作当前证据。 | Runs explicitly selected current-environment verification commands with redacted evidence. |
+
+## V1.0.1
+*Version 1.0.1*
+
+- 续接摘要时序修复：恢复写回时将本轮结论、状态和真实待办置于前部，旧证据保留有限空间；按条目去重，自动生成的续接提示不再被误判为待办。\
+  Continuation-summary order: recovery writes place the current conclusions, state, and real pending work first, retain bounded prior evidence, deduplicate by item, and exclude generated continuation guidance from pending work.
+- 可执行验证：`$verify` 现在提供实际命令执行器，只运行用户明确给出的命令，支持工作目录、超时、输出上限与 dry-run，并脱敏展示结果。\
+  Executable verification: `$verify` now has a command runner that executes only explicitly supplied commands, supports a working directory, timeout, output cap, and dry-run, and redacts displayed results.
+- 语义检索状态：`search --semantic-status` 只读报告本地模型和向量缓存状态，不下载模型、不建立向量，也不修改 Vault Markdown。\
+  Semantic readiness: `search --semantic-status` reports local model and vector-cache readiness without downloading a model, building vectors, or changing Vault Markdown.
+- 显式发布：`tools/publish_release.py` 在创建 GitHub Release 前校验工作区、提交、标签、远端标签和双语正文；远端写入仍要求 `--publish` 与 GitHub Token。\
+  Explicit publishing: `tools/publish_release.py` validates the worktree, commit, local tag, remote tag, and bilingual body before creating a GitHub Release; remote writes still require `--publish` and a GitHub token.
 
 ## V1.0.0
 *Version 1.0.0*
@@ -289,8 +314,19 @@ python3 tools/release_notes.py \
   --changelog "$OBSIDIAN_VAULT/Codex协同Obsidian工作流skill更新日志.md"
 ```
 
-该工具只输出经过双语校验的 Release 正文；创建 GitHub Release 仍需在提交、打标签、推送并回读远端标签后执行。\
-The tool only outputs a validated bilingual Release body. Creating a GitHub Release remains a separate action after committing, tagging, pushing, and reading back the remote tag.
+`tools/publish_release.py` 默认执行工作区、提交、标签、远端标签与双语正文预检；只有显式加入 `--publish` 且设置 `GITHUB_TOKEN` 后才创建 GitHub Release。已有同名 Release 只有在标题、标签、正文和公开状态均一致时才会通过。\
+`tools/publish_release.py` validates the worktree, commit, local and remote tags, and bilingual body by default. It creates a GitHub Release only with explicit `--publish` and `GITHUB_TOKEN`. An existing release passes only when its title, tag, body, and public state match.
+
+```bash
+python3 tools/publish_release.py \
+  --version <x.y.z> \
+  --changelog "$OBSIDIAN_VAULT/Codex协同Obsidian工作流skill更新日志.md"
+
+GITHUB_TOKEN="$GITHUB_TOKEN" python3 tools/publish_release.py \
+  --version <x.y.z> \
+  --changelog "$OBSIDIAN_VAULT/Codex协同Obsidian工作流skill更新日志.md" \
+  --publish
+```
 
 ## 目录结构
 *Repository Layout*
@@ -312,7 +348,8 @@ The tool only outputs a validated bilingual Release body. Creating a GitHub Rele
     ├── synthesize/
     └── verify/
 tools/
-└── release_notes.py
+├── release_notes.py
+└── publish_release.py
 ```
 
 ```text

@@ -99,6 +99,7 @@ def parse_args():
     parser.add_argument("--limit", type=int, default=5)
     parser.add_argument("--rebuild-index", action="store_true", help="重建当前 vault 的本地搜索索引")
     parser.add_argument("--index-status", action="store_true", help="显示当前 vault 的本地搜索索引状态")
+    parser.add_argument("--semantic-status", action="store_true", help="检查本地语义模型与向量缓存状态，不下载模型")
     parser.add_argument("--no-index", action="store_true", help="跳过本地索引，直接扫描 Markdown")
     parser.add_argument("--semantic", action="store_true", help="使用本地已缓存模型进行语义召回，不可用时保持词法检索")
     parser.add_argument("--semantic-model", default=SEMANTIC_MODEL_DEFAULT, help="本地语义模型名称，默认 intfloat/multilingual-e5-small")
@@ -395,6 +396,22 @@ def load_local_semantic_model(model_name: str):
         return None, f"本地语义模型不可用，已保持词法检索：{error}"
 
 
+def print_semantic_status(vault_root: Path, model_name: str) -> bool:
+    """Report local semantic readiness without downloading models or indexing notes."""
+    index_path = search_index_path(vault_root)
+    model, notice = load_local_semantic_model(model_name)
+    print("## 语义检索状态")
+    print(f"模型：`{model_name}`")
+    print(f"向量缓存：`{index_path}`{'，已存在。' if index_path.exists() else '，尚未建立。'}")
+    if model is None:
+        print("本地模型：未就绪。")
+        print(notice)
+        print("准备模型后可再次运行本命令；默认搜索始终可用。")
+        return False
+    print("本地模型：可用，后续 --semantic 会保持离线加载。")
+    return True
+
+
 def cosine_similarity(left: list[float], right: list[float]) -> float:
     if not left or len(left) != len(right):
         return 0.0
@@ -602,12 +619,23 @@ def main():
     if args.limit < 1:
         print("--limit 必须是正整数。", file=sys.stderr)
         sys.exit(2)
-    if (args.rebuild_index or args.index_status) and args.keywords:
-        print("索引维护模式不能同时提供搜索关键词。", file=sys.stderr)
+    maintenance_modes = sum((args.rebuild_index, args.index_status, args.semantic_status))
+    if maintenance_modes > 1:
+        print("一次只能选择一种索引或语义状态检查模式。", file=sys.stderr)
         sys.exit(2)
-    if not args.keywords and not (args.rebuild_index or args.index_status):
+    if maintenance_modes and args.keywords:
+        print("索引或语义状态检查模式不能同时提供搜索关键词。", file=sys.stderr)
+        sys.exit(2)
+    if args.semantic_status and args.semantic:
+        print("--semantic-status 不能与 --semantic 同时使用。", file=sys.stderr)
+        sys.exit(2)
+    if not args.keywords and not maintenance_modes:
         print("请提供至少一个搜索关键词。", file=sys.stderr)
         sys.exit(2)
+
+    if args.semantic_status:
+        print_semantic_status(vault_root, args.semantic_model)
+        return
 
     index_stats = None
     if args.no_index:
